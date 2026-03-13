@@ -1,0 +1,90 @@
+from pathlib import Path
+import numpy as np
+
+import lightning as L
+from monai.data import Dataset, DataLoader
+from monai.transforms import (
+    Compose,
+    RandZoomd,
+    RandRotated,
+    RandFlipd,
+)
+
+from preprocess import load_transformd, padded_crop_wrapper, planned_transformd
+
+
+def augmentation_transforms(keys, plan):
+    patch_size = plan["configurations"]["3d_fullres"]["patch_size"]
+    do_dummy_2d_data_aug = (max(patch_size) / patch_size[0]) > 3
+    if do_dummy_2d_data_aug:
+        rotation_for_DA = {
+            "range_x": (-30.0 / 360 * 2.0 * np.pi, 30.0 / 360 * 2.0 * np.pi),
+            "range_y": (0, 0),
+            "range_z": (0, 0),
+        }
+        min_zoom = [0.8, 1.0, 1.0]
+        max_zoom = [1.2, 1.0, 1.0]
+    else:
+        rotation_for_DA = {
+            "range_x": (-30.0 / 360 * 2.0 * np.pi, 30.0 / 360 * 2.0 * np.pi),
+            "range_y": (-30.0 / 360 * 2.0 * np.pi, 30.0 / 360 * 2.0 * np.pi),
+            "range_z": (-30.0 / 360 * 2.0 * np.pi, 30.0 / 360 * 2.0 * np.pi),
+        }
+        min_zoom = 0.8
+        max_zoom = 1.2
+    
+    composelist = [
+        load_transformd(keys),
+        planned_transformd(keys, plan),
+        padded_crop_wrapper(
+            keys,
+            patch_size,
+            [
+                RandRotated(keys, **rotation_for_DA, prob=0.2),
+                RandZoomd(keys, prob=0.2, min_zoom=min_zoom, max_zoom=max_zoom),
+                RandFlipd(keys, prob=0.5, spatial_axis=0),
+                RandFlipd(keys, prob=0.5, spatial_axis=1),
+                RandFlipd(keys, prob=0.5, spatial_axis=2),
+            ],
+        ),
+    ]
+    return Compose(composelist)
+
+
+class SSLDataModule(L.LightningDataModule):
+    def __init__(
+        self,
+        preprocessed_dir: str | Path,
+        dataset_name: str,
+        plan,
+        num_workers: int = 4,
+    ):
+        super().__init__()
+        self.preprocessed_dir = Path(preprocessed_dir)
+        self.dataset_name = dataset_name
+        self.plan = plan
+        self.num_workers = num_workers
+        self.keys = ["image"]
+        self.batch_size = self.plan["configurations"]["3d_fullres"]["batch_size"]
+
+    def setup(self, stage: str | None = None):
+        if stage == "fit" or stage is None:
+            pimgs = self.preprocessed_dir / self.dataset_name
+            assert pimgs.exists(), f"the preprocessed img dir {pimgs} do not exists"
+            
+            imgs = [
+                {"image": img, "name": img.name.split(".")[0].split("_")[0]}
+                for img in pimgs.iterdir()
+                if img.suffix == ".gz"
+            ]
+
+            transforms = augmentation_transforms(self.keys, self.plan)
+            self.train_dataset = Dataset(imgs, transforms)
+
+    def train_dataloader(self):
+        return DataLoader(
+            self.train_dataset,
+            batch_size=self.batch_size,
+            shuffle=True,
+            num_workers=self.num_workers,
+        )
