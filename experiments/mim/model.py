@@ -5,7 +5,8 @@ import torch.nn.functional as F
 import numpy as np
 from abc import ABC, abstractmethod
 from functools import partial
-from methods.structures.nets.UBiMambaEnc_3d import UNet
+from ..nets.unet import UNet
+from ..config import image_key
 
 
 def generate_mask(
@@ -228,7 +229,7 @@ class UNetEncoderWithMIM(L.LightningModule):
         }
 
     def training_step(self, batch, _):
-        image = batch["image"]
+        image = batch[image_key]
         mask = generate_mask(image, self.mask_shape, self.mask_ratio, self.device)
         # masked = image * (1 - mask) + self.mask_token * mask
         masked = image * (1 - mask)

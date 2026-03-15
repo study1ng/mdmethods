@@ -15,12 +15,12 @@ from monai.transforms import (
     RandAdjustContrastd,
     MaskIntensityd,
 )
-
-from preprocess import load_transformd, planned_transformd
+from ..config import image_key, label_key
+from ..preprocess import load_transformd, planned_transformd
 
 
 def augmentation_transforms(
-    plan, image_key: list = ["image"], label_key: list | None = ["label"]
+    plan, image_key: list = [image_key], label_key: list | None = [label_key]
 ):
     all_key = image_key + label_key if label_key is not None else image_key
     need_label = label_key is not None
@@ -81,7 +81,7 @@ def augmentation_transforms(
     return Compose(composelist)
 
 
-class MUNetFinetuningDataModule(L.LightningDataModule):
+class NoCropDataModule(L.LightningDataModule):
     def __init__(
         self,
         preprocessed_dir: str | Path,
@@ -94,8 +94,8 @@ class MUNetFinetuningDataModule(L.LightningDataModule):
         self.dataset_name = dataset_name
         self.plan = plan
         self.num_workers = num_workers
-        self.img_key = ["image"]
-        self.label_key = ["label"]
+        self.img_key = [image_key]
+        self.label_key = [label_key]
         self.keys = self.img_key + self.label_key
         # self.batch_size = self.plan["configurations"]["3d_fullres"]["batch_size"]
         self.batch_size = 1 # Trainerで勾配を蓄積する

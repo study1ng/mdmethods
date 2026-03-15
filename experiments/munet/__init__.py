@@ -1,21 +1,34 @@
-from methods.structures.munet import MUNet
-from methods.structures.nets.UBiMambaEnc_3d import UMambaEnc
-from methods.datamodules.munetfinetuning import MUNetFinetuningDataModule
-from pathlib import Path
-import json
-from utils import nowstring, resolved_path
-import torch
-torch.set_float32_matmul_precision("medium")
-import lightning as L
-from lightning.pytorch.loggers import CSVLogger
-from lightning.pytorch.callbacks import ModelCheckpoint
+from ..prune import SpacingShapeStrictPruner
+from ..preprocess import PlannedSSLPreprocessor
+import argparse
 
-def main(
+def prune(args):
+    SpacingShapeStrictPruner(args)()
+
+def preprocess(args):
+    PlannedSSLPreprocessor(args)()
+
+def train(args):
+    args = _train_argparse(args)
+    _train(args.preprocessed, args.pretrained, args.dataset, args.plan_path, args.devices, args.ckpt)
+
+def _train_argparse(args):
+    parser = argparse.ArgumentParser()
+    parser.add_argument("preprocessed", type=resolved_path)
+    parser.add_argument("pretrained", type=resolved_path)
+    parser.add_argument("dataset")
+    parser.add_argument("plan_path", type=resolved_path)
+    parser.add_argument("-d", "--devices", type=int, default=[0], nargs="+")
+    parser.add_argument("-c", "--ckpt", default=None, type=resolved_path)
+    args = parser.parse_args(args)
+    return args
+
+def _train(
     preprocessed: Path,
     pretrained: Path,
     dataset: str,
     plan_path: str,
-    device: int = 0,
+    device: list[int] = [0],
     checkpoint: str | None = None,
 ):
     plan = json.load(Path(plan_path).open())
@@ -47,15 +60,3 @@ def main(
         accumulate_grad_batches=2,
     )
     tr.fit(model=munet, datamodule=dm, ckpt_path=checkpoint)
-
-if __name__ == "__main__":
-    import argparse
-    parser = argparse.ArgumentParser()
-    parser.add_argument("preprocessed", type=resolved_path)
-    parser.add_argument("pretrained", type=resolved_path)
-    parser.add_argument("dataset")
-    parser.add_argument("plan_path", type=resolved_path)
-    parser.add_argument("-d", "--devices", type=int, default=[0], nargs="+")
-    parser.add_argument("-c", "--ckpt", default=None, type=resolved_path)
-    args = parser.parse_args()
-    main(args.preprocessed, args.pretrained, args.dataset, args.plan_path, args.devices, args.ckpt)

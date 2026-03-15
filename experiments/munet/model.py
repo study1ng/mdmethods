@@ -1,4 +1,4 @@
-from ..nets.UBiMambaEnc_3d import UNet
+from ..nets.unet import UNet
 import lightning as L
 from mamba_ssm import Mamba
 from torch import nn
@@ -11,7 +11,7 @@ from positional_encodings.torch_encodings import get_emb
 import numpy as np
 from monai.losses import DiceCELoss
 from typing import Generator
-from torch.autograd.graph import saved_tensors_hooks
+from ..config import image_key, label_key
 
 class OffloadToCPU(torch.autograd.Function):
     @staticmethod
@@ -314,7 +314,7 @@ class MUNet(L.LightningModule):
         return batch
 
     def training_step(self, batch, _):
-        image, label = batch["image"], batch["label"]
+        image, label = batch[image_key], batch[label_key]
         # image: the whole image which is on cpu
         # label: the whole ground truth which is on cpu
         # B, C, H, W, D, P: ボトルネックにおけるバッチサイズ, チャネル数, 高さ, 幅, 深さ, パッチ数

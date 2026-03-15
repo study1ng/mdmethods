@@ -9,8 +9,8 @@ from monai.transforms import (
     RandRotated,
     RandFlipd,
 )
-
-from preprocess import load_transformd, padded_crop_wrapper, planned_transformd
+from ..config import image_key, label_key
+from ..preprocess import load_transformd, padded_crop_wrapper, planned_transformd
 
 
 def augmentation_transforms(keys, plan):
@@ -64,7 +64,7 @@ class SSLDataModule(L.LightningDataModule):
         self.dataset_name = dataset_name
         self.plan = plan
         self.num_workers = num_workers
-        self.keys = ["image"]
+        self.keys = [image_key]
         self.batch_size = self.plan["configurations"]["3d_fullres"]["batch_size"]
 
     def setup(self, stage: str | None = None):
@@ -73,7 +73,7 @@ class SSLDataModule(L.LightningDataModule):
             assert pimgs.exists(), f"the preprocessed img dir {pimgs} do not exists"
             
             imgs = [
-                {"image": img, "name": img.name.split(".")[0].split("_")[0]}
+                {image_key: img, "name": img.name.split(".")[0].split("_")[0]}
                 for img in pimgs.iterdir()
                 if img.suffix == ".gz"
             ]
