@@ -48,7 +48,6 @@ def augmentation_transforms(
     composelist = [
         load_transformd(all_key),
         planned_transformd(plan, image_key, label_key),
-        RandRotated(all_key, **rotation_for_DA, prob=0.2),
         RandZoomd(all_key, prob=0.2, min_zoom=min_zoom, max_zoom=max_zoom, mode=interp_modes),
         RandRotated(all_key, **rotation_for_DA, prob=0.2, mode=interp_modes),
         RandGaussianNoised(image_key, prob=0.1),
@@ -95,9 +94,11 @@ class MUNetFinetuningDataModule(L.LightningDataModule):
         self.dataset_name = dataset_name
         self.plan = plan
         self.num_workers = num_workers
-        self.keys = ["image", "label"]
         self.img_key = ["image"]
-        self.batch_size = self.plan["configurations"]["3d_fullres"]["batch_size"]
+        self.label_key = ["label"]
+        self.keys = self.img_key + self.label_key
+        # self.batch_size = self.plan["configurations"]["3d_fullres"]["batch_size"]
+        self.batch_size = 1 # Trainerで勾配を蓄積する
 
     def setup(self, stage: str | None = None):
         if stage == "fit" or stage is None:
@@ -119,15 +120,15 @@ class MUNetFinetuningDataModule(L.LightningDataModule):
 
             files = [
                 {
-                    "image": pimg,
-                    "label": plabel,
-                    "name": pimg.name.split(".")[0].split("_")[0],
+                    self.img_key: pimg,
+                    self.label_key: plabel,
+                    "name": stem(pimg),
                 }
                 for pimg, plabel in zip(pimgs_files, plabels_files, strict=True)
                 if pimg.suffix == ".gz" and plabel.suffix == ".gz"
             ]
 
-            transforms = augmentation_transforms(self.keys, self.img_key, self.plan)
+            transforms = augmentation_transforms(self.plan, self.img_key, self.label_key)
             self.train_dataset = Dataset(files, transforms)
 
     def train_dataloader(self):

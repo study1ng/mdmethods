@@ -1,7 +1,6 @@
 from methods.structures.munet import MUNet
 from methods.structures.nets.UBiMambaEnc_3d import UMambaEnc
 from methods.datamodules.munetfinetuning import MUNetFinetuningDataModule
-
 from pathlib import Path
 import json
 from utils import nowstring, resolved_path
@@ -26,6 +25,7 @@ def main(
         checkpoint = Path(checkpoint)
     dm = MUNetFinetuningDataModule(preprocessed, dataset, plan)
     lm = UMambaEnc.from_plan(plan, 1, 10)
+    munet = MUNet(lm, 40 << 20)
     tr = L.Trainer(
         logger=[CSVLogger(ptdir, name="pretraining.log")],
         devices=device,
@@ -44,8 +44,9 @@ def main(
             )
         ],
         accelerator="gpu",
+        accumulate_grad_batches=2,
     )
-    tr.fit(model=lm, datamodule=dm, ckpt_path=checkpoint)
+    tr.fit(model=munet, datamodule=dm, ckpt_path=checkpoint)
 
 if __name__ == "__main__":
     import argparse

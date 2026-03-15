@@ -1,0 +1,42 @@
+# Pythonのバイトコード
+__pycache__/
+*.py[cod]
+*$py.class
+
+# 仮想環境
+env/
+venv/
+ENV/
+venv/
+
+# パッケージング関連
+build/
+dist/
+*.egg-info/
+eggs/
+
+# ログファイルとデバッグ情報
+*.log
+*.pot
+*.mo
+
+# テスト関連
+tox/
+nox/
+pytest_cache/
+coverage
+coverage.*
+
+# Jupyter Notebookのチェックポイント
+ipynb_checkpoints/
+
+# IDE関連 (PyCharm, VSCodeなど)
+idea/
+vscode/
+
+# その他の環境設定ファイル
+env
+envrc
+pdm-python
+
+data/
