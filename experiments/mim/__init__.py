@@ -11,11 +11,14 @@ from ..utils import resolved_path, loaded_json, nowstring
 from pathlib import Path
 from ..nets.UBiMambaEnc_3d import UMambaEnc
 from ..prune import SpacingShapeStrictPruner
+from ..analyze import CTAnalyzer
 
 
 def prune(args):
     SpacingShapeStrictPruner(args)()
 
+def analyze(args):
+    CTAnalyzer(args)()
 
 def preprocess(args):
     PlannedSSLPreprocessor(args)()

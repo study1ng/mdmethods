@@ -51,15 +51,21 @@ def planned_transformd(
     ]
     if need_label:
         ret.append(monai.transforms.Spacingd(label_key, pixdim=px, mode="nearest"))
-    monai.transforms.ScaleIntensityRanged(
-        image_key,
-        a_min=a_min,
-        a_max=a_max,
-        b_min=a_min,
-        b_max=a_max,
-        clip=True,
+    ret.extend(
+        [
+            monai.transforms.ScaleIntensityRanged(
+                image_key,
+                a_min=a_min,
+                a_max=a_max,
+                b_min=a_min,
+                b_max=a_max,
+                clip=True,
+            ),
+            monai.transforms.NormalizeIntensityd(
+                image_key, subtrahend=mean, divisor=std
+            ),
+        ]
     )
-    monai.transforms.NormalizeIntensityd(image_key, subtrahend=mean, divisor=std),
     return monai.transforms.Compose(ret)
 
 
@@ -159,9 +165,13 @@ class ImageLabelPreprocessor(Preprocessor):
     def parse_args(self, args: list[str]):
         super().parse_args(args)
         self.image_dir = self.args.image_path / self.args.dataset
-        assert self.image_dir.exists(), f"the raw image directory {self.image_dir} not exists"
+        assert (
+            self.image_dir.exists()
+        ), f"the raw image directory {self.image_dir} not exists"
         self.label_dir = self.args.label_path / self.args.dataset
-        assert self.label_dir.exists(), f"the raw label directory {self.label_dir} not exists"
+        assert (
+            self.label_dir.exists()
+        ), f"the raw label directory {self.label_dir} not exists"
 
     def initial_data(self) -> list[dict]:
         rimgd = _load_dir_to_dict(self.image_dir)

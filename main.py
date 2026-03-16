@@ -3,18 +3,11 @@ import argparse
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("method", type=str, choices=["preprocess", "prune", "train", "inference"])
+    parser.add_argument("method", type=str, choices=["prune", "preprocess", "train", "inference"])
     parser.add_argument("lib", type=str)
-    parser.add_argument("arguments", nargs="argparse.REMAINDER")
+    parser.add_argument("arguments", nargs=argparse.REMAINDER)
     parsed = parser.parse_args()
     experiment = importlib.import_module(f"experiments.{parsed.lib}")
-    match parsed.method:
-        case "preprocess":
-            func = experiment.preprocess
-        case "prune":
-            func = experiment.prune
-        case "train":
-            func = experiment.train
-        case "inference":
-            func = experiment.inference
-    func(parsed.arguments)
+    assert hasattr(experiment, parsed.method), f"experiments.{parsed.lib} doesn't have method {parsed.method}"
+    getattr(experiment, parsed.method)(parsed.arguments)
+    

@@ -1,9 +1,21 @@
 from ..prune import SpacingShapeStrictPruner
 from ..preprocess import PlannedSSLPreprocessor
-import argparse
+from ..utils import resolved_path, nowstring
+from pathlib import Path
+import json
+from .datamodule import MUNetFinetuningDataModule
+from .model import MUNet
+from ..nets.UBiMambaEnc_3d import UMambaEnc
+import argparse, lightning as L
+from lightning.pytorch.loggers import CSVLogger
+from lightning.pytorch.callbacks import ModelCheckpoint
+from ..analyze import CTAnalyzer
 
 def prune(args):
     SpacingShapeStrictPruner(args)()
+
+def analyze(args):
+    CTAnalyzer(args)()
 
 def preprocess(args):
     PlannedSSLPreprocessor(args)()
