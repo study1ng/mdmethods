@@ -2,8 +2,9 @@ from experiments import ImageOnlyPreprocessor
 import argparse
 from monai.transforms import Compose, SaveImaged
 from experiments.preprocess import load_transformd, planned_transformd
-from experiments.utils import resolved_path, loaded_json
+from experiments.utils import resolved_path
 from experiments.config import image_key
+from experiments.plan import Plan
 
 class PlannedSSLPreprocessor(ImageOnlyPreprocessor):
     def __init__(self, args):
@@ -17,7 +18,7 @@ class PlannedSSLPreprocessor(ImageOnlyPreprocessor):
 
     def preprocess_transform(self):
         assert self.args.plan_path.exists(), f"plan file {self.args.plan_path} not exists"
-        plan = loaded_json(self.args.plan_path)
+        plan = Plan(self.args.plan_path)
         return Compose(
             [
                 load_transformd(self.image_key),

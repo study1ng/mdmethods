@@ -11,6 +11,7 @@ from pathlib import Path
 from experiments.nets.UBiMambaEnc_3d import UMambaEnc
 from experiments.prune import SpacingShapeStrictPruner
 from experiments.analyze import CTAnalyzer
+from experiments.plan import Plan
 
 
 def prune(args):
@@ -44,7 +45,7 @@ def _train(
     checkpoint: str | None = None,
 ):
     torch.set_float32_matmul_precision("medium")
-    plan = loaded_json(plan_path)
+    plan = Plan(plan_path)
     ptdir = pretrained / dataset / nowstring()
     ptdir.mkdir(parents=True, exist_ok=True)
     if checkpoint is not None:

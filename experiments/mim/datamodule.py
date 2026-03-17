@@ -11,10 +11,10 @@ from monai.transforms import (
 )
 from experiments.config import image_key
 from experiments.preprocess import load_transformd, padded_crop_wrapper, planned_transformd
+from experiments.plan import Plan
 
-
-def augmentation_transforms(keys, plan):
-    patch_size = plan["configurations"]["3d_fullres"]["patch_size"]
+def augmentation_transforms(keys, plan: Plan):
+    patch_size = plan.patch_size
     do_dummy_2d_data_aug = (max(patch_size) / patch_size[0]) > 3
     if do_dummy_2d_data_aug:
         rotation_for_DA = {
@@ -56,7 +56,7 @@ class SSLDataModule(L.LightningDataModule):
         self,
         preprocessed_dir: str | Path,
         dataset_name: str,
-        plan,
+        plan: Plan,
         num_workers: int = 4,
     ):
         super().__init__()
@@ -65,7 +65,7 @@ class SSLDataModule(L.LightningDataModule):
         self.plan = plan
         self.num_workers = num_workers
         self.keys = [image_key]
-        self.batch_size = self.plan["configurations"]["3d_fullres"]["batch_size"]
+        self.batch_size = self.plan.batch_size
 
     def setup(self, stage: str | None = None):
         if stage == "fit" or stage is None:

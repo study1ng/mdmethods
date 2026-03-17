@@ -17,14 +17,14 @@ from monai.transforms import (
 )
 from experiments.config import image_key, label_key
 from experiments.preprocess import load_transformd, planned_transformd
-
+from experiments.plan import Plan
 
 def augmentation_transforms(
-    plan, image_key: list = [image_key], label_key: list | None = [label_key]
+    plan: Plan, image_key: list = [image_key], label_key: list | None = [label_key]
 ):
     all_key = image_key + label_key if label_key is not None else image_key
     need_label = label_key is not None
-    patch_size = plan["configurations"]["3d_fullres"]["patch_size"]
+    patch_size = plan.patch_size
     do_dummy_2d_data_aug = (max(patch_size) / patch_size[0]) > 3
     if do_dummy_2d_data_aug:
         rotation_for_DA = {
@@ -86,7 +86,7 @@ class NoCropDataModule(L.LightningDataModule):
         self,
         preprocessed_dir: str | Path,
         dataset_name: str,
-        plan,
+        plan: Plan,
         num_workers: int = 4,
     ):
         super().__init__()

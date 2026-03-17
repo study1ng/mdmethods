@@ -2,9 +2,11 @@ from experiments import ImageLabelPreprocessor
 import argparse
 from monai.transforms import Compose, SaveImaged
 from experiments.preprocess import load_transformd, planned_transformd
-from experiments.utils import resolved_path, loaded_json
+from experiments.utils import resolved_path
 from experiments.config import image_key, label_key
 from experiments.utils import ensure_dir_new, assert_file_exist
+from experiments.plan import Plan
+
 
 class PlannedPreprocessor(ImageLabelPreprocessor):
     def get_argument_parser(self) -> argparse.ArgumentParser:
@@ -19,7 +21,7 @@ class PlannedPreprocessor(ImageLabelPreprocessor):
         ensure_dir_new(self.image_save_path)
         ensure_dir_new(self.label_save_path)
         assert_file_exist(self.args.plan_path)
-        self.plan = loaded_json(self.args.plan_path)
+        self.plan = Plan(self.args.plan_path)
 
     def preprocess_transform(self):
         return Compose(

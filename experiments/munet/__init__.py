@@ -1,4 +1,4 @@
-from experiments.prune import SpacingShapeStrictPruner
+from experiments.prune import NoPruner as Pruner
 from experiments.munet.preprocess import PlannedPreprocessor
 from experiments.utils import resolved_path, nowstring
 from pathlib import Path
@@ -13,7 +13,7 @@ from experiments.analyze import CTAnalyzer
 import torch
 
 def prune(args):
-    SpacingShapeStrictPruner(args)()
+    Pruner(args)()
 
 def analyze(args):
     CTAnalyzer(args)()

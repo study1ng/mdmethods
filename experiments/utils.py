@@ -2,6 +2,8 @@ from pathlib import Path
 import json
 from datetime import datetime
 from shutil import rmtree
+import uuid
+import threading
 
 
 def filekey(filepath: Path | str) -> Path:
@@ -20,10 +22,17 @@ def loaded_json(p: Path | str) -> object:
 def nowstring():
     return datetime.now().strftime("%Y.%m.%d.%H.%M.%S")
 
+def _bg_rmtree(path: Path):
+    """バックグラウンドで安全に削除を実行する"""
+    rmtree(path)
 def ensure_dir_new(p: Path | str) -> Path:
     p = resolved_path(p)
-    p.exists() and rmtree(p)
+    if p.exists():
+        tmp_p = p.with_name(f"{p.name}_trash_{uuid.uuid4().hex}")
+        p.rename(tmp_p)
+        threading.Thread(target=_bg_rmtree, args=(tmp_p,), daemon=False).start()
     p.mkdir(exist_ok=True, parents=True)
+    return p
 
 def set_symln(from_: Path | str, to: Path | str):
     from_ = resolved_path(from_)

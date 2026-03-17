@@ -11,6 +11,10 @@ from experiments.utils import (
     set_symln,
 )
 from typing import Sequence
+import concurrent.futures
+from tqdm import tqdm
+from experiments.plan import Plan
+
 
 
 class Pruner(ABC):
@@ -35,6 +39,7 @@ class Pruner(ABC):
 
     def get_argument_parser(self) -> argparse.ArgumentParser:
         parser = argparse.ArgumentParser()
+        parser.add_argument("-w", "--workers", type=int, default=4)
         parser.add_argument("analyzed_path", type=resolved_path)
         parser.add_argument(
             "target_paths_and_save_paths", type=resolved_path, nargs="+"
@@ -84,8 +89,17 @@ class Pruner(ABC):
         processing_dict = self._construct_processing_dict()
         print("processing", len(processing_dict), "entries")
         count = 0
-        for entry in processing_dict.values():
-            count += self._process_entry(*entry)
+        tasks = list(processing_dict.values())
+        with concurrent.futures.ThreadPoolExecutor(max_workers=self.args.workers) as executor:
+            futures = [executor.submit(self._process_entry, *task) for task in tasks]
+            try:
+                for future in tqdm(
+                    concurrent.futures.as_completed(futures), total=len(futures)
+                ):
+                    count += future.result()
+            except Exception as e:
+                executor.shutdown(wait=False, cancel_futures=True)
+                raise e
         print(count, "entries will be used")
 
     def _process_entry(
@@ -128,24 +142,28 @@ class SpacingShapeStrictPruner(Pruner):
 
     def parse_args(self, args):
         super().parse_args(args)
-        self.plan = loaded_json(self.args.plan_path)
+        self.plan = Plan(self.args.plan_path)
+        self.plan_spacing = self.plan.spacing
+        self.plan_shape = self.plan.patch_size
+        self.spacing_criteria = [
+            i * self.args.allowed_spacing_factor for i in self.plan_spacing
+        ]
+        self.shape_criteria = [int(i * self.args.allowed_shape_factor) for i in self.plan_shape]
+
 
     def need_prune(self, data: AnalyzedData) -> bool:
-        allowed_spacing_factor = self.args.allowed_spacing_factor
-        allowed_shape_factor = self.args.allowed_shape_factor
-        splan = self.plan["configurations"]["3d_fullres"]
-        plan_spacing = splan["spacing"][::-1]
-        plan_shape = splan["patch_size"][::-1]
-        spacing_criteria = [
-            i * allowed_spacing_factor for i in plan_spacing
-        ]  # nnUNetのplanは[z, y, x]順なので[x, y, z]に直す.
-        shape_criteria = [int(i * allowed_shape_factor) for i in plan_shape]
         prune = (
-            data.spacing_x >= spacing_criteria[0]
-            or data.spacing_y >= spacing_criteria[1]
-            or data.spacing_z >= spacing_criteria[2]
-            or data.shape_x * data.spacing_x <= shape_criteria[0] * plan_spacing[0]
-            or data.shape_y * data.spacing_y <= shape_criteria[1] * plan_spacing[1]
-            or data.shape_z * data.spacing_z <= shape_criteria[2] * plan_spacing[2]
+            data.spacing_x >= self.spacing_criteria[0]
+            or data.spacing_y >= self.spacing_criteria[1]
+            or data.spacing_z >= self.spacing_criteria[2]
+            or data.shape_x * data.spacing_x <= self.shape_criteria[0] * self.plan_spacing[0]
+            or data.shape_y * data.spacing_y <= self.shape_criteria[1] * self.plan_spacing[1]
+            or data.shape_z * data.spacing_z <= self.shape_criteria[2] * self.plan_spacing[2]
         )  # 各軸のボクセル間隔のいずれかがcriteriaより大きい場合か, 形状のいずれかがcriteriaより小さい場合に刈り取られる
         return prune
+
+
+class NoPruner(Pruner):
+    def need_prune(self, data):
+        # no prune
+        return False

@@ -7,6 +7,7 @@ from abc import ABC, abstractmethod
 from functools import partial
 from experiments.nets.unet import UNet
 from experiments.config import image_key
+from experiments.plan import Plan
 
 
 def generate_mask(
@@ -249,7 +250,7 @@ class UNetEncoderWithMIM(L.LightningModule):
     @classmethod
     def from_plan(
         cls,
-        plan,
+        plan: Plan,
         unetclass,
         mask_ratio,
         loss_fn=partial(nn.L1Loss, reduction="none"),
@@ -259,9 +260,9 @@ class UNetEncoderWithMIM(L.LightningModule):
         weights: list[float] | None = None,
     ):
         return cls(
-            unetclass.from_plan(plan, 1, 1),
+            unetclass.from_plan(plan.plan, 1, 1),
             1,
-            plan["configurations"]["3d_fullres"]["patch_size"],
+            plan.patch_size,
             mask_ratio,
             mask_fn,
             loss_fn,

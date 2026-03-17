@@ -7,6 +7,7 @@ import tqdm
 from experiments.utils import filekey, resolved_path
 import monai.transforms
 from experiments.config import image_key, label_key
+from experiments.plan import Plan
 
 
 def load_transformd(keys):
@@ -20,7 +21,9 @@ def load_transformd(keys):
 
 
 def planned_transformd(
-    plan, image_key: list | tuple = (image_key,), label_key: list | tuple | None = (label_key,)
+    plan: Plan,
+    image_key: list | tuple = (image_key,),
+    label_key: list | tuple | None = (label_key,),
 ):
     """planを必要とする処理"""
     if label_key is None:
@@ -28,17 +31,12 @@ def planned_transformd(
     else:
         all_key = image_key + label_key
     need_label = label_key is not None
-    jplan = plan["configurations"]["3d_fullres"]
-    px = jplan["spacing"]
-    splan = plan["foreground_intensity_properties_per_channel"]["0"]
-    a_min: float = splan[
-        "percentile_00_5"
-    ]  # 0.5 percentile value of whole training dataset
-    a_max: float = splan[
-        "percentile_99_5"
-    ]  # 99.5 percentile value of whole training dataset
-    std: float = splan["std"]  # standard deviation of whole training dataset
-    mean: float = splan["mean"]  # average of whole training dataset
+    px = plan.spacing
+    patch_size = plan.patch_size
+    a_min: float = plan.percentile_00_5  # 0.5 percentile value of whole training dataset
+    a_max: float = plan.percentile_99_5  # 99.5 percentile value of whole training dataset
+    std: float = plan.std  # standard deviation of whole training dataset
+    mean: float = plan.mean  # average of whole training dataset
     ret = [
         monai.transforms.CropForegroundd(
             all_key,
@@ -51,6 +49,8 @@ def planned_transformd(
     ]
     if need_label:
         ret.append(monai.transforms.Spacingd(label_key, pixdim=px, mode="nearest"))
+    v = {ik: -1024 for ik in image_key}
+    v.update({lk: 0 for lk in label_key})
     ret.extend(
         [
             monai.transforms.ScaleIntensityRanged(
@@ -63,6 +63,12 @@ def planned_transformd(
             ),
             monai.transforms.NormalizeIntensityd(
                 image_key, subtrahend=mean, divisor=std
+            ),
+            monai.transforms.SpatialPadd(
+                image_key,
+                spatial_size=patch_size,
+                mode="constant",
+                constant_values = v,
             ),
         ]
     )
