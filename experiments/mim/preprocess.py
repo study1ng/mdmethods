@@ -1,15 +1,15 @@
-from .. import ImageOnlyPreprocessor
+from experiments import ImageOnlyPreprocessor
 import argparse
 from monai.transforms import Compose, SaveImaged
-from ..preprocess import load_transformd, planned_transformd
-from ..utils import resolved_path, loaded_json
-from ..config import image_key
+from experiments.preprocess import load_transformd, planned_transformd
+from experiments.utils import resolved_path, loaded_json
+from experiments.config import image_key
 
 class PlannedSSLPreprocessor(ImageOnlyPreprocessor):
     def __init__(self, args):
         super().__init__(args)
         self.image_key = [image_key]
-        self.save_path = self.args.save_path / self.args.dataset
+        self.save_path = self.args.save_path
 
     def get_argument_parser(self) -> argparse.ArgumentParser:
         parser = super().get_argument_parser()

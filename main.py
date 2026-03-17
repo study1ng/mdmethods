@@ -3,7 +3,7 @@ import argparse
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("method", type=str, choices=["prune", "preprocess", "train", "inference"])
+    parser.add_argument("method", type=str, choices=["analyze", "prune", "preprocess", "train", "inference"])
     parser.add_argument("lib", type=str)
     parser.add_argument("arguments", nargs=argparse.REMAINDER)
     parsed = parser.parse_args()

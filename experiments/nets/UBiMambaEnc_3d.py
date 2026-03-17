@@ -9,20 +9,14 @@ from torch.nn.modules.conv import _ConvNd
 from torch.nn.modules.dropout import _DropoutNd
 from dynamic_network_architectures.building_blocks.helper import convert_conv_op_to_dim
 
-from dynamic_network_architectures.building_blocks.helper import (
-    get_matching_instancenorm,
-    convert_dim_to_conv_op,
-)
 from mamba_ssm import Mamba
 from dynamic_network_architectures.building_blocks.helper import (
     maybe_convert_scalar_to_list,
     get_matching_pool_op,
 )
-from torch.cuda.amp import autocast
+from torch.amp import autocast
 from dynamic_network_architectures.building_blocks.residual import BasicBlockD
-import einops.layers.torch
-from torch.nn.init import trunc_normal_
-from .unet import UNet
+from experiments.nets.unet import UNet
 
 class UpsampleLayer(nn.Module):
     def __init__(
@@ -97,7 +91,7 @@ class MambaLayer(nn.Module):
         out = x_mamba.reshape(B, n_tokens, *img_dims)
         return out
 
-    @autocast(enabled=False)
+    @autocast(device_type="cuda", enabled=False)
     def forward(self, x):
         if x.dtype == torch.float16 or x.dtype == torch.bfloat16:
             x = x.type(torch.float32)

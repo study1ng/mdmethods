@@ -1,17 +1,16 @@
-from .preprocess import PlannedSSLPreprocessor
+from experiments.mim.preprocess import PlannedSSLPreprocessor
 import argparse, lightning as L
-from .datamodule import SSLDataModule
-from .model import UNetEncoderWithMIM
+from experiments.mim.datamodule import SSLDataModule
+from experiments.mim.model import UNetEncoderWithMIM
 from lightning.pytorch.loggers import CSVLogger
 from lightning.pytorch.callbacks import ModelCheckpoint
 import torch
 
-torch.set_float32_matmul_precision("medium")
-from ..utils import resolved_path, loaded_json, nowstring
+from experiments.utils import resolved_path, loaded_json, nowstring
 from pathlib import Path
-from ..nets.UBiMambaEnc_3d import UMambaEnc
-from ..prune import SpacingShapeStrictPruner
-from ..analyze import CTAnalyzer
+from experiments.nets.UBiMambaEnc_3d import UMambaEnc
+from experiments.prune import SpacingShapeStrictPruner
+from experiments.analyze import CTAnalyzer
 
 
 def prune(args):
@@ -44,6 +43,7 @@ def _train(
     device: int = 0,
     checkpoint: str | None = None,
 ):
+    torch.set_float32_matmul_precision("medium")
     plan = loaded_json(plan_path)
     ptdir = pretrained / dataset / nowstring()
     ptdir.mkdir(parents=True, exist_ok=True)

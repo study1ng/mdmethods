@@ -13,7 +13,7 @@ import json
 import torch
 import numpy as np
 from abc import ABC, abstractmethod
-from .utils import resolved_path
+from experiments.utils import resolved_path
 import argparse
 
 class Analyzer(ABC):    
@@ -30,18 +30,18 @@ class Analyzer(ABC):
         self.args = parser.parse_args(args)
 
     @abstractmethod
-    def analyze(self, pth: Path) -> dict:
+    def analyze(self, p: Path) -> dict:
         ...
     
     @abstractmethod
-    def get_target_paths(self, pth: Path) -> list[Path]:
+    def get_target_paths(self) -> list[Path]:
         ...
 
-    def __call__(self, pth: Path):
+    def __call__(self):
         max_workers = self.args.workers
         analyzed = []
         with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
-            futures = [executor.submit(self.analyze, p) for p in self.get_target_paths(pth)]
+            futures = [executor.submit(self.analyze, p) for p in self.get_target_paths()]
             try:
                 for future in tqdm(
                     concurrent.futures.as_completed(futures), total=len(futures)
@@ -57,10 +57,14 @@ class Analyzer(ABC):
         ...
     
 class CTAnalyzer(Analyzer):
-    def get_target_paths(self, pth):
-        return [p for p in pth.iterdir() if p.suffix == ".gz"]
+    def parse_args(self, args):
+        super().parse_args(args)
+        self.target = self.args.target
 
-    def analyze(self, pth: Path) -> dict:
+    def get_target_paths(self):
+        return [p for p in self.target.iterdir() if p.suffix == ".gz"]
+
+    def analyze(self, p: Path) -> dict:
         # 画素値の最大値, 最小値, 平均値, 中間値, 0.5パーセンタイル値, 99.5パーセンタイル値, 5パーセンタイル値, 95パーセンタイル値
         # 標準偏差, スペーシング, クロップ後の形状を出力する.
         transforms = Compose(
@@ -75,10 +79,10 @@ class CTAnalyzer(Analyzer):
                 ),
             ]
         )
-        transformed: monai.data.MetaTensor = transforms(pth)
+        transformed: monai.data.MetaTensor = transforms(p)
         percentiles = np.quantile(transformed.numpy(), [0., 0.005, 0.050, 0.50, 0.950, 0.995, 1.])
         return {
-            "path": str(pth),
+            "path": str(p),
             "max": percentiles[-1].item(),
             "min": percentiles[0].item(),
             "mean": transformed.mean().item(),

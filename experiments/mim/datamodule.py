@@ -9,8 +9,8 @@ from monai.transforms import (
     RandRotated,
     RandFlipd,
 )
-from ..config import image_key, label_key
-from ..preprocess import load_transformd, padded_crop_wrapper, planned_transformd
+from experiments.config import image_key
+from experiments.preprocess import load_transformd, padded_crop_wrapper, planned_transformd
 
 
 def augmentation_transforms(keys, plan):

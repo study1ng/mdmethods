@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 import matplotlib.pyplot as plt
-from datatypes import AnalyzedData
+from experiments import AnalyzedData
 
 if __name__ == "__main__":
     import argparse

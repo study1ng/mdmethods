@@ -15,8 +15,8 @@ from monai.transforms import (
     RandAdjustContrastd,
     MaskIntensityd,
 )
-from ..config import image_key, label_key
-from ..preprocess import load_transformd, planned_transformd
+from experiments.config import image_key, label_key
+from experiments.preprocess import load_transformd, planned_transformd
 
 
 def augmentation_transforms(

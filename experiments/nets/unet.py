@@ -1,3 +1,5 @@
+from torch import nn
+from typing import List, Union, Tuple
 
 class UNet(nn.Module):
     encoder: nn.Module

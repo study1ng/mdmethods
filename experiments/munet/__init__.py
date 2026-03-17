@@ -1,15 +1,16 @@
-from ..prune import SpacingShapeStrictPruner
-from ..preprocess import PlannedSSLPreprocessor
-from ..utils import resolved_path, nowstring
+from experiments.prune import SpacingShapeStrictPruner
+from experiments.munet.preprocess import PlannedPreprocessor
+from experiments.utils import resolved_path, nowstring
 from pathlib import Path
 import json
-from .datamodule import MUNetFinetuningDataModule
-from .model import MUNet
-from ..nets.UBiMambaEnc_3d import UMambaEnc
+from experiments.munet.datamodule import NoCropDataModule
+from experiments.munet.model import MUNet
+from experiments.nets.UBiMambaEnc_3d import UMambaEnc
 import argparse, lightning as L
 from lightning.pytorch.loggers import CSVLogger
 from lightning.pytorch.callbacks import ModelCheckpoint
-from ..analyze import CTAnalyzer
+from experiments.analyze import CTAnalyzer
+import torch
 
 def prune(args):
     SpacingShapeStrictPruner(args)()
@@ -18,9 +19,10 @@ def analyze(args):
     CTAnalyzer(args)()
 
 def preprocess(args):
-    PlannedSSLPreprocessor(args)()
+    PlannedPreprocessor(args)()
 
 def train(args):
+    torch.set_float32_matmul_precision("medium")
     args = _train_argparse(args)
     _train(args.preprocessed, args.pretrained, args.dataset, args.plan_path, args.devices, args.ckpt)
 
@@ -48,7 +50,7 @@ def _train(
     ptdir.mkdir(parents=True, exist_ok=True)
     if checkpoint is not None:
         checkpoint = Path(checkpoint)
-    dm = MUNetFinetuningDataModule(preprocessed, dataset, plan)
+    dm = NoCropDataModule(preprocessed, dataset, plan)
     lm = UMambaEnc.from_plan(plan, 1, 10)
     munet = MUNet(lm, 40 << 20)
     tr = L.Trainer(

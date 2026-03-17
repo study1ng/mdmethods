@@ -4,9 +4,9 @@ import argparse
 from monai.transforms import Transform
 from monai.data import Dataset, DataLoader
 import tqdm
-from .utils import filekey, resolved_path
+from experiments.utils import filekey, resolved_path
 import monai.transforms
-from ..config import image_key, label_key
+from experiments.config import image_key, label_key
 
 
 def load_transformd(keys):
@@ -20,7 +20,7 @@ def load_transformd(keys):
 
 
 def planned_transformd(
-    plan, image_key: list = [image_key], label_key: list | None = [label_key]
+    plan, image_key: list | tuple = (image_key,), label_key: list | tuple | None = (label_key,)
 ):
     """planを必要とする処理"""
     if label_key is None:
@@ -43,7 +43,7 @@ def planned_transformd(
         monai.transforms.CropForegroundd(
             all_key,
             select_fn=lambda x: x > -900,
-            source_key=image_key,
+            source_key=image_key[0],
             margin=10,
             allow_smaller=False,
         ),
@@ -137,12 +137,11 @@ class ImageOnlyPreprocessor(Preprocessor):
         parser = super().get_argument_parser()
         parser.add_argument("image_path", type=resolved_path)
         parser.add_argument("save_path", type=resolved_path)
-        parser.add_argument("dataset", type=str)
         return parser
 
     def parse_args(self, args: list[str]):
         super().parse_args(args)
-        self.image_dir = self.args.image_path / self.args.dataset
+        self.image_dir = self.args.image_path
         assert self.image_dir.exists(), f"the raw directory {self.image_dir} not exists"
 
     def initial_data(self) -> list[dict]:
@@ -159,16 +158,15 @@ class ImageLabelPreprocessor(Preprocessor):
         parser.add_argument("image_path", type=resolved_path)
         parser.add_argument("label_path", type=resolved_path)
         parser.add_argument("save_path", type=resolved_path)
-        parser.add_argument("dataset", type=str)
         return parser
 
     def parse_args(self, args: list[str]):
         super().parse_args(args)
-        self.image_dir = self.args.image_path / self.args.dataset
+        self.image_dir = self.args.image_path
         assert (
             self.image_dir.exists()
         ), f"the raw image directory {self.image_dir} not exists"
-        self.label_dir = self.args.label_path / self.args.dataset
+        self.label_dir = self.args.label_path
         assert (
             self.label_dir.exists()
         ), f"the raw label directory {self.label_dir} not exists"

@@ -1,3 +1,4 @@
+from experiments.utils import filekey
 class AnalyzedData:
     def __init__(self, data):
         self.min = data["min"]
@@ -18,3 +19,4 @@ class AnalyzedData:
         self.spacing_y = self.spacing[1]
         self.spacing_z = self.spacing[2]
         self.path = data["path"]
+        self.filekey = filekey(self.path)

@@ -1,4 +1,4 @@
-from ..nets.unet import UNet
+from experiments.nets.unet import UNet
 import lightning as L
 from mamba_ssm import Mamba
 from torch import nn
@@ -7,11 +7,17 @@ from torch.utils.checkpoint import checkpoint
 import math
 from monai.data.utils import iter_patch_position
 import torch
-from positional_encodings.torch_encodings import get_emb
 import numpy as np
 from monai.losses import DiceCELoss
 from typing import Generator
-from ..config import image_key, label_key
+from experiments.config import image_key, label_key
+
+def get_emb(sin_inp):
+    """
+    Gets a base embedding for one dimension with sin and cos intertwined
+    """
+    emb = torch.stack((sin_inp.sin(), sin_inp.cos()), dim=-1)
+    return torch.flatten(emb, -2, -1)
 
 class OffloadToCPU(torch.autograd.Function):
     @staticmethod
@@ -285,7 +291,7 @@ class MUNet(L.LightningModule):
     def to_skips(
         self, on_cpus, on_gpus, reshaped, patches
     ) -> Generator[
-        tuple[list[torch.Tensor], torch.Tensor, torch.Tensor, tuple[int, ...]]
+        tuple[list[torch.Tensor], torch.Tensor, torch.Tensor, tuple[int, ...]], None, None
     ]:
         """
         Packs several generators into one.

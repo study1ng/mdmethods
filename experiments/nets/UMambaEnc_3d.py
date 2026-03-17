@@ -4,17 +4,9 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 from typing import Union, Type, List, Tuple
-
-from dynamic_network_architectures.building_blocks.helper import get_matching_convtransp
-
 from torch.nn.modules.conv import _ConvNd
 from torch.nn.modules.dropout import _DropoutNd
 from dynamic_network_architectures.building_blocks.helper import convert_conv_op_to_dim
-
-from nnunetv2.utilities.plans_handling.plans_handler import ConfigurationManager, PlansManager
-from dynamic_network_architectures.building_blocks.helper import get_matching_instancenorm, convert_dim_to_conv_op
-from dynamic_network_architectures.initialization.weight_init import init_last_bn_before_add_to_0
-from nnunetv2.utilities.network_initialization import InitWeights_He
 from mamba_ssm import Mamba
 from dynamic_network_architectures.building_blocks.helper import maybe_convert_scalar_to_list, get_matching_pool_op
 from torch.cuda.amp import autocast
@@ -486,59 +478,3 @@ class UMambaEnc(nn.Module):
                                                                                 "batch channel. Do not give input_size=(b, c, x, y(, z)). " \
                                                                                 "Give input_size=(x, y(, z))!"
         return self.encoder.compute_conv_feature_map_size(input_size) + self.decoder.compute_conv_feature_map_size(input_size)
-
-
-def get_umamba_enc_3d_from_plans(
-        plans_manager: PlansManager,
-        dataset_json: dict,
-        configuration_manager: ConfigurationManager,
-        num_input_channels: int,
-        deep_supervision: bool = True
-    ):
-    """
-    we may have to change this in the future to accommodate other plans -> network mappings
-
-    num_input_channels can differ depending on whether we do cascade. Its best to make this info available in the
-    trainer rather than inferring it again from the plans here.
-    """
-    num_stages = len(configuration_manager.conv_kernel_sizes)
-
-    dim = len(configuration_manager.conv_kernel_sizes[0])
-    conv_op = convert_dim_to_conv_op(dim)
-
-    label_manager = plans_manager.get_label_manager(dataset_json)
-
-    segmentation_network_class_name = 'UMambaEnc'
-    network_class = UMambaEnc
-    kwargs = {
-        'UMambaEnc': {
-            'input_size': configuration_manager.patch_size,
-            'conv_bias': True,
-            'norm_op': get_matching_instancenorm(conv_op),
-            'norm_op_kwargs': {'eps': 1e-5, 'affine': True},
-            'dropout_op': None, 'dropout_op_kwargs': None,
-            'nonlin': nn.LeakyReLU, 'nonlin_kwargs': {'inplace': True},
-        }
-    }
-
-    conv_or_blocks_per_stage = {
-        'n_conv_per_stage': configuration_manager.n_conv_per_stage_encoder,
-        'n_conv_per_stage_decoder': configuration_manager.n_conv_per_stage_decoder
-    }
-
-    model = network_class(
-        input_channels=num_input_channels,
-        n_stages=num_stages,
-        features_per_stage=[min(configuration_manager.UNet_base_num_features * 2 ** i,
-                                configuration_manager.unet_max_num_features) for i in range(num_stages)],
-        conv_op=conv_op,
-        kernel_sizes=configuration_manager.conv_kernel_sizes,
-        strides=configuration_manager.pool_op_kernel_sizes,
-        num_classes=label_manager.num_segmentation_heads,
-        deep_supervision=deep_supervision,
-        **conv_or_blocks_per_stage,
-        **kwargs[segmentation_network_class_name]
-    )
-    model.apply(InitWeights_He(1e-2))
-
-    return model

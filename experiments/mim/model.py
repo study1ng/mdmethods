@@ -5,8 +5,8 @@ import torch.nn.functional as F
 import numpy as np
 from abc import ABC, abstractmethod
 from functools import partial
-from ..nets.unet import UNet
-from ..config import image_key
+from experiments.nets.unet import UNet
+from experiments.config import image_key
 
 
 def generate_mask(
