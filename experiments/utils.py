@@ -57,7 +57,7 @@ def channel_of_tensor(x: Tensor) -> int:
 def size_of_tensor(x: Tensor) -> Tuple[int, ...]:
     return x.shape[2:]
 
-def check_dividable(lhs: int | Tuple[int, ...], rhs: int | Tuple[int, ...]) -> Tuple[Union[int, Tuple[int, ...]], bool]:
+def divmod_accept_tuple(lhs: int | Tuple[int, ...], rhs: int | Tuple[int, ...]) -> Tuple[Union[int, Tuple[int, ...]], bool]:
     if isinstance(lhs, tuple) and isinstance(rhs, int):
         rhs = (rhs, ) * len(lhs)
     elif isinstance(lhs, int) and isinstance(rhs, tuple):
@@ -68,7 +68,7 @@ def check_dividable(lhs: int | Tuple[int, ...], rhs: int | Tuple[int, ...]) -> T
     div = (l // r for l, r in zip(lhs, rhs))
     return (div, all(modulo))
 
-def assert_dividable(lhs: int | Tuple[int, ...], rhs: int | Tuple[int, ...]) -> Union[int, Tuple[int, ...]]:
-    div, ok = check_dividable(lhs, rhs)
+def assert_divisable(lhs: int | Tuple[int, ...], rhs: int | Tuple[int, ...]) -> Union[int, Tuple[int, ...]]:
+    div, ok = divmod_accept_tuple(lhs, rhs)
     assert ok, f"not dividable, lhs: {lhs}, rhs: {rhs}"
     return div

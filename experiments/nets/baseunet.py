@@ -7,7 +7,7 @@ from experiments.utils import (
     assert_eq,
     channel_of_tensor,
     size_of_tensor,
-    assert_dividable,
+    assert_divisable,
 )
 from experiments.plan import Plan
 
@@ -86,7 +86,7 @@ class EncoderStage(Stage):
     """
     def __init__(self, input_channel, after_sample_channel, output_channel, input_size, output_size, pool_stride = 2):
         super().__init__(input_channel, after_sample_channel, output_channel, input_size, output_size, pool_stride)
-        assert_eq(assert_dividable(self.input_size, self.output_size), self.pool_stride)
+        assert_eq(assert_divisable(self.input_size, self.output_size), self.pool_stride)
 
     def forward(self, x: Tensor) -> Tensor:
         assert_eq(self.input_channel, channel_of_tensor(x))
@@ -123,7 +123,7 @@ class DecoderStage(Stage):
             output_size,
             pool_stride=pool_stride,
         )
-        assert_eq(assert_dividable(self.output_size, self.input_size), self.pool_stride)
+        assert_eq(assert_divisable(self.output_size, self.input_size), self.pool_stride)
 
     def forward(self, x: Tensor, skip: Tensor) -> Tensor:
         assert_eq(self.skip_channel, channel_of_tensor(skip))
