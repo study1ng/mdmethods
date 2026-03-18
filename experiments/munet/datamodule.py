@@ -14,13 +14,14 @@ from monai.transforms import (
     RandScaleIntensityd,
     RandAdjustContrastd,
     MaskIntensityd,
+    SpatialPadd,
 )
 from experiments.config import image_key, label_key
 from experiments.preprocess import load_transformd, planned_transformd
 from experiments.plan import Plan
 
 def augmentation_transforms(
-    plan: Plan, image_key: list = [image_key], label_key: list | None = [label_key]
+    plan: Plan, image_key, label_key: list | None
 ):
     all_key = image_key + label_key if label_key is not None else image_key
     need_label = label_key is not None
@@ -48,7 +49,7 @@ def augmentation_transforms(
     composelist = [
         load_transformd(all_key),
         planned_transformd(plan, image_key, label_key),
-        RandZoomd(all_key, prob=0.2, min_zoom=min_zoom, max_zoom=max_zoom, mode=interp_modes),
+        RandZoomd(all_key, prob=0.2, min_zoom=min_zoom, max_zoom=max_zoom, mode=interp_modes, keep_size=True),
         RandRotated(all_key, **rotation_for_DA, prob=0.2, mode=interp_modes),
         RandGaussianNoised(image_key, prob=0.1),
         RandGaussianSmoothd(
@@ -77,6 +78,7 @@ def augmentation_transforms(
         RandFlipd(all_key, prob=0.5, spatial_axis=0),
         RandFlipd(all_key, prob=0.5, spatial_axis=1),
         RandFlipd(all_key, prob=0.5, spatial_axis=2),
+        SpatialPadd(keys=all_key, spatial_size=patch_size)
     ]
     return Compose(composelist)
 
@@ -85,13 +87,11 @@ class NoCropDataModule(L.LightningDataModule):
     def __init__(
         self,
         preprocessed_dir: str | Path,
-        dataset_name: str,
         plan: Plan,
         num_workers: int = 4,
     ):
         super().__init__()
         self.preprocessed_dir = Path(preprocessed_dir)
-        self.dataset_name = dataset_name
         self.plan = plan
         self.num_workers = num_workers
         self.img_key = [image_key]
@@ -102,8 +102,8 @@ class NoCropDataModule(L.LightningDataModule):
 
     def setup(self, stage: str | None = None):
         if stage == "fit" or stage is None:
-            pimgs = self.preprocessed_dir / self.dataset_name / "images"
-            plabels = self.preprocessed_dir / self.dataset_name / "labels"
+            pimgs = self.preprocessed_dir / image_key
+            plabels = self.preprocessed_dir / label_key
             assert pimgs.exists(), f"the preprocessed img dir {pimgs} do not exists"
             assert (
                 plabels.exists()
@@ -120,8 +120,8 @@ class NoCropDataModule(L.LightningDataModule):
 
             files = [
                 {
-                    self.img_key: pimg,
-                    self.label_key: plabel,
+                    image_key: pimg,
+                    label_key: plabel,
                     "name": stem(pimg),
                 }
                 for pimg, plabel in zip(pimgs_files, plabels_files, strict=True)
@@ -137,4 +137,5 @@ class NoCropDataModule(L.LightningDataModule):
             batch_size=self.batch_size,
             shuffle=True,
             num_workers=self.num_workers,
+            pin_memory=True,
         )

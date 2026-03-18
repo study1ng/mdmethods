@@ -21,13 +21,13 @@ def get_emb(sin_inp):
 
 class OffloadToCPU(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, x):
+    def forward(ctx, x: torch.Tensor):
         ctx.original_device = x.device
         return x.cpu()
 
     @staticmethod
-    def backward(ctx, grad_output):
-        return grad_output.to(ctx.original_device)
+    def backward(ctx, grad_output: torch.Tensor):
+        return grad_output.to(ctx.original_device, non_blocking=True)
 
 class PointPositionalEncoding3D(nn.Module):
     def __init__(self, channels):
@@ -40,11 +40,11 @@ class PointPositionalEncoding3D(nn.Module):
         if channels % 2:
             channels += 1
         self.channels = channels
-        self.div_term = np.exp(
+        div_term = np.exp(
             np.arange(0, self.channels, 2) * -(np.log(10000.0) / self.channels)
         )
-        self.div_term = torch.tensor(self.div_term)
-        self.register_buffer("div_term", self.div_term)
+        div_term = torch.tensor(div_term)
+        self.register_buffer("div_term", div_term)
 
     def forward(self, pos: tuple[int, int, int]) -> torch.Tensor:
         device = self.div_term.device
@@ -71,11 +71,11 @@ class PositionalEncoding3D(nn.Module):
         if channels % 2:
             channels += 1
         self.channels = channels
-        self.inv_freq = 1.0 / (
+        inv_freq = 1.0 / (
             10000 ** (torch.arange(0, channels, 2).float() / channels)
         )
         self.cached_penc = None
-        self.register_buffer("inv_freq", self.inv_freq)
+        self.register_buffer("inv_freq", inv_freq)
 
     def forward(self, shape: tuple[int, int, int, int, int]) -> torch.Tensor:
         """
@@ -129,7 +129,7 @@ class MUNet(L.LightningModule):
         expand=2,
     ):
         super().__init__()
-        self.save_hyperparameters()
+        self.save_hyperparameters(ignore=["unet"])
         self.gpu_memory_limit = gpu_memory_limit  # Bytes
         self.n_stages = unet.n_stages
         # self.automatic_optimization = False
@@ -173,13 +173,13 @@ class MUNet(L.LightningModule):
         self.pe = PositionalEncoding3D(self.bottleneck_channel - global_pe_channel)
         self.pos_blend = lambda a, b: a + b  # 単純に加算する
 
-    @property
-    def itemsize(self) -> int:
-        if isinstance(self.dtype, torch.dtype):
-            return self.dtype.itemsize
+    @staticmethod
+    def itemsize(dtype) -> int:
+        if isinstance(dtype, torch.dtype):
+            return dtype.itemsize
 
-        if isinstance(self.dtype, str):
-            dtype_str = self.dtype.lower()
+        if isinstance(dtype, str):
+            dtype_str = dtype.lower()
             if "64" in dtype_str:
                 return 8
             elif "32" in dtype_str:
@@ -189,7 +189,7 @@ class MUNet(L.LightningModule):
             elif "8" in dtype_str:
                 return 1
 
-        raise ValueError(f"unable to get itemsize from {self.dtype}")
+        raise ValueError(f"unable to get itemsize from {dtype}")
 
     def configure_optimizers(self):
         self.optim = torch.optim.AdamW(
@@ -224,10 +224,10 @@ class MUNet(L.LightningModule):
             },
         }
 
-    def maximum_cpu_level(self, patch_len, batch_size) -> int:
+    def maximum_cpu_level(self, patch_len, batch_size, patch_dtype) -> int:
         # self.type_size: self.dtypeの占用バイト数
         layer_bytesize = [
-            patch_len * batch_size * lec * self.itemsize
+            patch_len * batch_size * lec * self.itemsize(patch_dtype)
             for lec in self.layer_elements_count
         ]
         acc = 0
@@ -237,7 +237,7 @@ class MUNet(L.LightningModule):
                 assert (
                     idx != 0
                 ), f"""unable to place bottleneck feature map at gpu.
-                memory bound: {self.gpu_memory_limit}, type: {self.dtype}, type_size: {self.itemsize},
+                memory bound: {self.gpu_memory_limit}, type: {self.dtype}, type_size: {self.itemsize(patch_dtype)},
                 layer_elements_count: {self.layer_elements_count}, patch_length: {patch_len}, batch_size: {batch_size},
                 bytesize_per_patch: {layer_bytesize}, 
                 due to layer_bytesize[-1]={layer_bytesize[-1]} > self.gpu_memory_limit, we can conclude that it's unable."""
@@ -281,7 +281,7 @@ class MUNet(L.LightningModule):
         """
         ppe = self.ppe.forward(patch_pos)  # (c)
         b, c, h, w, d = patch_shape
-        ppe_re = repeat(ppe, "c -> b l c", b=b, l=h * w * d)
+        ppe_re = ppe.view(1, 1, -1).expand(b, h * w * d, -1)
         pe = self.pe.forward(patch_shape)
         pe_re = rearrange(pe, "b h w d c -> b (h w d) c")
         ret, _ = pack([ppe_re, pe_re], "b l *")
@@ -333,14 +333,14 @@ class MUNet(L.LightningModule):
         def to_cpu(tensor: torch.Tensor):
             return tensor.cpu()
         def to_gpu(tensor: torch.Tensor):
-            return tensor.to(self.device)
+            return tensor.to(self.device, non_blocking=True)
 
         for patch_img, _, patch_pos in patches:
-            patch_img = patch_img.to(self.device).requires_grad_()
+            patch_img = patch_img.to(self.device, non_blocking=True).requires_grad_()
             skips = checkpoint(
                 self.encoder, patch_img, use_reentrant=False
             )  # avoid backward gradient OOM
-            maximum_level = self.maximum_cpu_level(len(patches), patch_img.shape[0])
+            maximum_level = self.maximum_cpu_level(len(patches), patch_img.shape[0], patch_img.dtype)
             on_cpu = [OffloadToCPU.apply(i) for i in skips[:maximum_level]]
             on_gpu = [i for i in skips[maximum_level:-1]]
             on_cpus[patch_pos] = on_cpu
@@ -348,7 +348,7 @@ class MUNet(L.LightningModule):
 
             last = skips[-1]
             flat_transpose = rearrange(last, "b c h w d -> b (h w d) c")  # (B, HWD, C)
-            pos_encode = self.add_pos_enc(last.shape, patch_pos)  # (B, HWD, C)
+            pos_encode = self.add_pos_enc(last.shape, patch_pos).to(dtype=self.dtype)  # (B, HWD, C)
             blended = self.pos_blend(
                 pos_encode, flat_transpose
             )  # (B, HWD, C), (B, HWD, C) -> (B, HWD, C)
@@ -358,11 +358,11 @@ class MUNet(L.LightningModule):
         lasts, _ = pack(lasts, "b * c")  # (B, HWDP, C)
         blended, _ = pack(blend, "b * c")  # (B, HWDP, C)
         blended_c = blended.contiguous()  # (B, HWDP, C)
-        blended_flipped = torch.flip(blended_c, dim=[1]).contiguous()  # (B, HWDP, C)
+        blended_flipped = torch.flip(blended_c, dims=[1]).contiguous()  # (B, HWDP, C)
 
         mamba = self.mamba(blended_c)  # (B, HWDP, C)
         mamba_flipped = torch.flip(
-            self.mamba_flip(blended_flipped), dim=[1]
+            self.mamba_flip(blended_flipped), dims=[1]
         ).contiguous()  # (B, HWDP, C)
         mamba_cat, _ = pack([mamba, mamba_flipped], "b l *")  # (B, HWDP, 2C)
         bottleneck = self.head(mamba_cat)  # (B, HWDP, C)
@@ -384,7 +384,7 @@ class MUNet(L.LightningModule):
             out = checkpoint(
                 self.decoder, on_gpu_skip, use_reentrant=False
             )  # avoid backward gradient OOM
-            patch_label = patch_label.to(self.device)
+            patch_label = patch_label.to(self.device, non_blocking=True)
             loss = self.loss(out, patch_label)
             all_loss += loss
         all_loss /= len(patches)

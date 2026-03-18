@@ -19,12 +19,3 @@ class Plan:
         self.median = self.splan["median"]
         self.percentile_00_5 = self.splan["percentile_00_5"]
         self.percentile_99_5 = self.splan["percentile_99_5"]
-
-    def __getattr__(self, name):
-        if name in self.jplan:
-            return self.jplan[name]
-        if name in self.splan:
-            return self.splan[name]
-        if name in self.plan:
-            return self.plan[name]
-        raise AttributeError(f"Plan doesn't have {name}")

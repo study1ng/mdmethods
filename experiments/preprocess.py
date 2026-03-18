@@ -49,8 +49,6 @@ def planned_transformd(
     ]
     if need_label:
         ret.append(monai.transforms.Spacingd(label_key, pixdim=px, mode="nearest"))
-    v = {ik: -1024 for ik in image_key}
-    v.update({lk: 0 for lk in label_key})
     ret.extend(
         [
             monai.transforms.ScaleIntensityRanged(
@@ -68,8 +66,14 @@ def planned_transformd(
                 image_key,
                 spatial_size=patch_size,
                 mode="constant",
-                constant_values = v,
+                constant_values = -1000,
             ),
+            monai.transforms.SpatialPadd(
+                label_key,
+                spatial_size=patch_size,
+                mode="constant",
+                constant_values = 0,
+            )
         ]
     )
     return monai.transforms.Compose(ret)
@@ -97,7 +101,6 @@ def padded_crop_wrapper(
 def _load_dir_to_dict(p: Path) -> dict[str, Path]:
     ret = {}
     for f in p.iterdir():
-        assert not f.is_dir(), f"a dir {f} found in {p}"
         name = filekey(f)
         ret[name] = f
     return ret
