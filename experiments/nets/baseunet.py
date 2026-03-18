@@ -193,17 +193,17 @@ class UNetEncoder(nn.Module, ABC):
         self.skip_size = skip_size
         self.pool_strides = pool_strides
         self.pool_channel_increase_ratio = pool_channel_increase_ratio
-        self.stem = self.build_stem()
-        self.stages = self.build_stages()
+        self.stem = self._build_stem()
+        self.stages = self._build_stages()
         assert (
             len(self.stages) == n_stages
         ), f"len(self.stages) should be same as n_stages, check build_stages"
 
     @abstractmethod
-    def build_stem(self) -> UNetStem: ...
+    def _build_stem(self) -> UNetStem: ...
 
     @abstractmethod
-    def build_stages(self) -> nn.ModuleList[EncoderStage]:
+    def _build_stages(self) -> nn.ModuleList[EncoderStage]:
         """
         Return
         ------
@@ -297,11 +297,11 @@ class UNetDecoder(nn.Module, ABC):
         self.pool_strides = pool_strides
         self.pool_channel_increase_ratio = pool_channel_increase_ratio
         self.deep_supervision = deep_supervision
-        self.head = self.build_head()
-        self.stages = self.build_stages()
+        self.head = self._build_head()
+        self.stages = self._build_stages()
 
     @abstractmethod
-    def build_stages(self) -> nn.ModuleList[DecoderStage]:
+    def _build_stages(self) -> nn.ModuleList[DecoderStage]:
         """
         Return
         ------
@@ -312,7 +312,7 @@ class UNetDecoder(nn.Module, ABC):
         ...
 
     @abstractmethod
-    def build_head(self) -> Union[UNetHead, nn.ModuleList[UNetHead]]:
+    def _build_head(self) -> Union[UNetHead, nn.ModuleList[UNetHead]]:
         """
         Return
         ------
@@ -510,6 +510,7 @@ class UNet(nn.Module, ABC):
         output_channel,
         pool_channel_increase_ratio=2,
         deep_supervision: bool = False,
+        **kwargs
     ) -> "UNet":
         return cls(
             patch_size=plan.patch_size,
@@ -521,4 +522,5 @@ class UNet(nn.Module, ABC):
             pool_channel_increase_ratio=pool_channel_increase_ratio,
             deep_supervision=deep_supervision,
             n_stages=len(plan.pool_strides),
+            **kwargs
         )

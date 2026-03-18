@@ -220,9 +220,10 @@ class PlainEncoderStage(EncoderStage):
         input_size,
         output_size,
         pool_stride: int | tuple[int, ...] = 2,
-        kernel_size: int | tuple[int, ...] = 2,
+        kernel_size: int | tuple[int, ...] = 3,
         n_blocks: int = 3,
     ):
+        self.kernel_size = kernel_size
         self.n_blocks = n_blocks
         super().__init__(
             input_channel,
@@ -248,6 +249,7 @@ class PlainEncoderStage(EncoderStage):
             self.after_sample_channel,
             dim=self.dim,
             pool_stride=self.pool_stride,
+            kernel_size=self.kernel_size
         )
 
 
@@ -307,12 +309,12 @@ class BasicHead(UNetHead):
 
 
 class PlainEncoder(UNetEncoder):
-    def build_stem(self):
+    def _build_stem(self):
         return BasicStem(
             self.input_channel, self.stem_channel, self.input_size, n_blocks=3,
         )
 
-    def build_stages(self):
+    def _build_stages(self):
         stages = []
         for i in range(self.n_stages):
             stages.append(
@@ -330,7 +332,7 @@ class PlainEncoder(UNetEncoder):
 
 
 class PlainDecoder(UNetDecoder):
-    def build_head(self):
+    def _build_head(self):
         if self.deep_supervision:
             return nn.ModuleList(
                 BasicHead(skip_channel, self.output_channel, size=skip_size)
@@ -341,7 +343,7 @@ class PlainDecoder(UNetDecoder):
                 self.skip_channels[0], self.output_channel, size=self.skip_size[0]
             )
 
-    def build_stages(self):
+    def _build_stages(self):
         stages = []
         for i in range(self.n_stages):
             stages.append(
