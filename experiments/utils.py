@@ -1,9 +1,12 @@
 from pathlib import Path
 import json
 from datetime import datetime
+from re import L
 from shutil import rmtree
 import uuid
 import threading
+from typing import Tuple, Union
+from torch import Tensor
 
 
 def filekey(filepath: Path | str) -> Path:
@@ -43,3 +46,29 @@ def set_symln(from_: Path | str, to: Path | str):
 
 def assert_file_exist(p: Path | str) -> Path:
     assert resolved_path(p).exists(), f"{p} is not exists"
+
+def assert_eq(expected, found, message: str | None = None):
+    assert expected == found, f"expected {expected}, found {found}" if message is None else message
+
+
+def channel_of_tensor(x: Tensor) -> int:
+    return x.shape[1]
+
+def size_of_tensor(x: Tensor) -> Tuple[int, ...]:
+    return x.shape[2:]
+
+def check_dividable(lhs: int | Tuple[int, ...], rhs: int | Tuple[int, ...]) -> Tuple[Union[int, Tuple[int, ...]], bool]:
+    if isinstance(lhs, tuple) and isinstance(rhs, int):
+        rhs = (rhs, ) * len(lhs)
+    elif isinstance(lhs, int) and isinstance(rhs, tuple):
+        lhs = (lhs, ) * len(rhs)
+    elif isinstance(lhs, int) and isinstance(rhs, int):
+        return lhs // rhs, lhs % rhs == 0
+    modulo = (l % r == 0 for l, r in zip(lhs, rhs, strict=True))
+    div = (l // r for l, r in zip(lhs, rhs))
+    return (div, all(modulo))
+
+def assert_dividable(lhs: int | Tuple[int, ...], rhs: int | Tuple[int, ...]) -> Union[int, Tuple[int, ...]]:
+    div, ok = check_dividable(lhs, rhs)
+    assert ok, f"not dividable, lhs: {lhs}, rhs: {rhs}"
+    return div

@@ -12,19 +12,31 @@ from experiments.analyze import CTAnalyzer
 import torch
 from experiments.plan import Plan
 
+
 def prune(args):
     Pruner(args)()
+
 
 def analyze(args):
     CTAnalyzer(args)()
 
+
 def preprocess(args):
     PlannedPreprocessor(args)()
+
 
 def train(args):
     torch.set_float32_matmul_precision("medium")
     args = _train_argparse(args)
-    _train(args.preprocessed, args.pretrained, args.plan_path, args.devices, args.ckpt)
+    _train(
+        preprocessed=args.preprocessed,
+        pretrained=args.pretrained,
+        plan_path=args.plan_path,
+        device=args.devices,
+        checkpoint=args.ckpt,
+        maximum_gpu_memory_limit=args.maximum_gpu_memory_limit,
+    )
+
 
 def _train_argparse(args):
     parser = argparse.ArgumentParser()
@@ -33,13 +45,22 @@ def _train_argparse(args):
     parser.add_argument("plan_path", type=resolved_path)
     parser.add_argument("-d", "--devices", type=int, default=[0], nargs="+")
     parser.add_argument("-c", "--ckpt", default=None, type=resolved_path)
+    parser.add_argument(
+        "-m",
+        "--maximum_gpu_memory_limit",
+        default=5.0,
+        type=float,
+        help="maximum gpu memory limit for feature maps in gb",
+    )
     args = parser.parse_args(args)
     return args
+
 
 def _train(
     preprocessed: Path,
     pretrained: Path,
     plan_path: str,
+    maximum_gpu_memory_limit: float,
     device: list[int] = [0],
     checkpoint: str | None = None,
 ):
@@ -49,7 +70,7 @@ def _train(
         checkpoint = Path(checkpoint)
     dm = NoCropDataModule(preprocessed, plan)
     lm = UMambaEnc.from_plan(plan.plan, 1, 118)
-    munet = MUNet(lm, 20 << 30)
+    munet = MUNet(lm, maximum_gpu_memory_limit * (1 << 30))
     tr = L.Trainer(
         logger=[CSVLogger(pretrained, name="pretraining.log")],
         devices=device,

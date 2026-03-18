@@ -19,3 +19,6 @@ class Plan:
         self.median = self.splan["median"]
         self.percentile_00_5 = self.splan["percentile_00_5"]
         self.percentile_99_5 = self.splan["percentile_99_5"]
+        self.pool_strides = self.jplan["pool_op_kernel_sizes"]
+        self.conv_kernel_size = self.jplan["conv_kernel_sizes"]
+        self.stem_channel = self.jplan["UNet_base_num_features"]

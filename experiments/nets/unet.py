@@ -1,9 +1,8 @@
 from torch import nn
 from typing import List, Union, Tuple
+from abc import ABC, abstractmethod, abstractclassmethod,
 
-class UNet(nn.Module):
-    encoder: nn.Module
-    decoder: nn.Module
+class UNet(nn.Module, ABC):
     def __init__(
         self,
         input_size: Tuple[int, ...],
@@ -12,7 +11,7 @@ class UNet(nn.Module):
         features_per_stage: Union[int, List[int], Tuple[int, ...]],
         strides: Union[int, List[int], Tuple[int, ...]],
     ):
-        super().__init__()
+        nn.Module.__init__()
         self.input_size = input_size
         self.input_channels = input_channels
         self.n_stages = n_stages
@@ -42,3 +41,5 @@ class UNet(nn.Module):
                 size // stride for size, stride in zip(current_spatial_size, _strides[i])
             ]
             self.output_size.append(tuple(current_spatial_size))
+
+class UNetEncoder(nn.Module):
