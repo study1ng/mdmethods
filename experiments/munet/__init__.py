@@ -1,14 +1,14 @@
 from experiments.prune import NoPruner as Pruner
-from experiments.munet.preprocess import PlannedPreprocessor
+from experiments.munet.preprocess import PlannedPreprocessor as Preprocessor
 from experiments.utils import resolved_path
 from pathlib import Path
-from experiments.munet.datamodule import NoCropDataModule
-from experiments.munet.model import MUNet
-from experiments.nets.UBiMambaEnc_3d import UMambaEnc
+from experiments.munet.datamodule import NoCropDataModule as DataModule
+from experiments.munet.model import MUNet as Model
+from experiments.nets import UBiMamba as Net
 import argparse, lightning as L
 from lightning.pytorch.loggers import CSVLogger
 from lightning.pytorch.callbacks import ModelCheckpoint
-from experiments.analyze import CTAnalyzer
+from experiments.analyze import CTAnalyzer as Analyzer
 import torch
 from experiments.plan import Plan
 
@@ -18,11 +18,11 @@ def prune(args):
 
 
 def analyze(args):
-    CTAnalyzer(args)()
+    Analyzer(args)()
 
 
 def preprocess(args):
-    PlannedPreprocessor(args)()
+    Preprocessor(args)()
 
 
 def train(args):
@@ -68,9 +68,9 @@ def _train(
     pretrained.mkdir(parents=True, exist_ok=True)
     if checkpoint is not None:
         checkpoint = Path(checkpoint)
-    dm = NoCropDataModule(preprocessed, plan)
-    lm = UMambaEnc.from_plan(plan.plan, 1, 118)
-    munet = MUNet(lm, maximum_gpu_memory_limit * (1 << 30))
+    dm = DataModule(preprocessed, plan)
+    lm = Net.from_plan(plan.plan, 1, 118)
+    munet = Model(lm, maximum_gpu_memory_limit * (1 << 30))
     tr = L.Trainer(
         logger=[CSVLogger(pretrained, name="pretraining.log")],
         devices=device,

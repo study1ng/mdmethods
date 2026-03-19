@@ -3,7 +3,7 @@ import torch
 from mamba_ssm import Mamba
 from experiments.nets.baseunet import Block
 from experiments.nets.plainunet import PlainEncoderStage, PlainEncoder, PlainUNet
-from math import prod
+from experiments.nets.generic_blocks import SequentialBlock
 
 
 class MambaBlock(Block):
@@ -44,7 +44,7 @@ class MambaBlock(Block):
         return out
 
     @autocast(device_type="cuda", enabled=False)
-    def forward(self, x):
+    def _forward(self, x):
         if x.dtype == torch.float16 or x.dtype == torch.bfloat16:
             x = x.type(torch.float32)
 
@@ -83,7 +83,7 @@ class MEncoderStage(PlainEncoderStage):
         )
 
     def _build_block(self):
-        return nn.Sequential(
+        return SequentialBlock(
             super()._build_block(),
             MambaBlock(
                 self.output_channel,

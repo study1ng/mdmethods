@@ -137,7 +137,29 @@ class DecoderStage(Stage):
         return out
 
 UNetStem = Block
-UNetHead = Block
+
+class UNetHead(nn.Module):
+    def __init__(self, input_size, input_channel, output_size, output_channel):
+        super().__init__()
+        self.input_size = input_size
+        self.input_channel = input_channel
+        self.output_size = output_size
+        self.output_channel = output_channel
+        self.dim = len(self.input_size)
+
+    @abstractmethod
+    def _forward(self, x: Tensor) -> Tensor: ...
+
+    def forward(self, x: Tensor) -> Tensor:
+        assert_eq(self.input_size, size_of_tensor(x))
+        assert_eq(self.input_channel, channel_of_tensor(x))
+        y = self._forward(x)
+        assert_eq(self.output_size, size_of_tensor(y))
+        assert_eq(self.output_channel, channel_of_tensor(y))
+        return y
+
+
+# UNetHead = Block
 
 class UNetEncoder(nn.Module, ABC):
     """UNet Encoder
@@ -495,8 +517,8 @@ class UNet(nn.Module, ABC):
             assert_eq(self.n_stages + 1, len(d))
             for i in range(len(d)):
                 assert_eq(self.output_channel, channel_of_tensor(d[i]))
-                assert_eq(self.skip_size[i], size_of_tensor(d[i]))
-            assert_eq(self.patch_size, size_of_tensor(d[0]))
+                # assert_eq(self.skip_size[i], size_of_tensor(d[i])) # UNetHeadはBlockではなく, MIMのヘッドなど, 入力前後で解像度を変化させてもいいものとして定義したため, このアサーションは削除
+            # assert_eq(self.patch_size, size_of_tensor(d[0]))
         else:
             assert_eq(self.patch_size, size_of_tensor(d))
             assert_eq(self.output_channel, channel_of_tensor(d))

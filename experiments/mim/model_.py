@@ -5,7 +5,7 @@ import torch.nn.functional as F
 import numpy as np
 from abc import ABC, abstractmethod
 from functools import partial
-from experiments.nets.unet import UNet
+from experiments.nets import UNet
 from experiments.config import image_key
 from experiments.plan import Plan
 

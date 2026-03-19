@@ -1,4 +1,4 @@
-from experiments.nets.unet import UNet
+from experiments.nets import UNet
 import lightning as L
 from mamba_ssm import Mamba
 from torch import nn

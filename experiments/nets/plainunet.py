@@ -9,6 +9,7 @@ from experiments.nets.baseunet import (
 )
 from torch import nn, Tensor
 import torch.nn.functional as F
+from experiments.nets.generic_blocks import SequentialBlock
 
 
 def pad(kernel_size: int | tuple[int, ...]) -> int | tuple[int, ...]:
@@ -199,7 +200,7 @@ class RepeatingBlock(Block):
         self.n_blocks = n_blocks
         self.kernel_size = kernel_size
         super().__init__(input_channel, output_channel, size)
-        self.module = nn.Sequential(
+        self.module = SequentialBlock(
             block_fn(input_channel, output_channel, size, kernel_size=kernel_size),
             *(
                 block_fn(output_channel, output_channel, size, kernel_size=kernel_size)
@@ -301,8 +302,8 @@ BasicStem = RepeatingBlock
 
 class BasicHead(UNetHead):
     def __init__(self, input_channel, output_channel, size):
-        super().__init__(input_channel, output_channel, size)
-        self.conv = conv(len(self.size))(input_channel, output_channel, kernel_size=1)
+        super().__init__(input_size=size, input_channel=input_channel, output_size=size, output_channel=output_channel)
+        self.conv = conv(self.dim)(input_channel, output_channel, kernel_size=1)
 
     def _forward(self, x):
         return self.conv(x)
