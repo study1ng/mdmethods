@@ -10,8 +10,13 @@ from monai.transforms import (
     RandFlipd,
 )
 from experiments.config import image_key
-from experiments.preprocess import load_transformd, padded_crop_wrapper, planned_transformd
+from experiments.preprocess import (
+    load_transformd,
+    padded_crop_wrapper,
+    planned_transformd,
+)
 from experiments.plan import Plan
+
 
 def augmentation_transforms(keys, plan: Plan):
     patch_size = plan.patch_size
@@ -32,10 +37,10 @@ def augmentation_transforms(keys, plan: Plan):
         }
         min_zoom = 0.8
         max_zoom = 1.2
-    
+
     composelist = [
         load_transformd(keys),
-        planned_transformd(keys, plan),
+        planned_transformd(plan, (image_key,)),
         padded_crop_wrapper(
             keys,
             patch_size,
@@ -55,13 +60,11 @@ class SSLDataModule(L.LightningDataModule):
     def __init__(
         self,
         preprocessed_dir: str | Path,
-        dataset_name: str,
         plan: Plan,
         num_workers: int = 4,
     ):
         super().__init__()
         self.preprocessed_dir = Path(preprocessed_dir)
-        self.dataset_name = dataset_name
         self.plan = plan
         self.num_workers = num_workers
         self.keys = [image_key]
@@ -69,12 +72,11 @@ class SSLDataModule(L.LightningDataModule):
 
     def setup(self, stage: str | None = None):
         if stage == "fit" or stage is None:
-            pimgs = self.preprocessed_dir / self.dataset_name
-            assert pimgs.exists(), f"the preprocessed img dir {pimgs} do not exists"
-            
+            assert self.preprocessed_dir.exists(), f"the preprocessed img dir {self.preprocessed_dir} do not exists"
+
             imgs = [
                 {image_key: img, "name": img.name.split(".")[0].split("_")[0]}
-                for img in pimgs.iterdir()
+                for img in self.preprocessed_dir.iterdir()
                 if img.suffix == ".gz"
             ]
 
@@ -87,4 +89,5 @@ class SSLDataModule(L.LightningDataModule):
             batch_size=self.batch_size,
             shuffle=True,
             num_workers=self.num_workers,
+            pin_memory=True,
         )

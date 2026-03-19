@@ -23,7 +23,7 @@ def load_transformd(keys):
 def planned_transformd(
     plan: Plan,
     image_key: list | tuple = (image_key,),
-    label_key: list | tuple | None = (label_key,),
+    label_key: list | tuple | None = None,
 ):
     """planを必要とする処理"""
     if label_key is None:
@@ -68,14 +68,17 @@ def planned_transformd(
                 mode="constant",
                 constant_values = -1000,
             ),
+        ]
+    )
+    if need_label:
+        ret.append(
             monai.transforms.SpatialPadd(
                 label_key,
                 spatial_size=patch_size,
                 mode="constant",
                 constant_values = 0,
             )
-        ]
-    )
+        )
     return monai.transforms.Compose(ret)
 
 

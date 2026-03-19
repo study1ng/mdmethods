@@ -145,7 +145,10 @@ class BasicStridedConv(nn.Module):
             padding=self.padding,
         )
         self.resconv = self.conv(
-            input_channel, output_channel, kernel_size=1, stride=pool_stride,
+            input_channel,
+            output_channel,
+            kernel_size=1,
+            stride=pool_stride,
         )
         self.norm1 = self.norm(output_channel)
         self.norm2 = self.norm(output_channel)
@@ -195,7 +198,13 @@ class UpsampleLayer(nn.Module):
 
 class RepeatingBlock(Block):
     def __init__(
-        self, input_channel, output_channel, size, n_blocks: int, kernel_size: int | tuple[int, ...] = 3, block_fn=BasicBlock
+        self,
+        input_channel,
+        output_channel,
+        size,
+        n_blocks: int,
+        kernel_size: int | tuple[int, ...] = 3,
+        block_fn=BasicBlock,
     ):
         self.n_blocks = n_blocks
         self.kernel_size = kernel_size
@@ -240,7 +249,7 @@ class PlainEncoderStage(EncoderStage):
             self.after_sample_channel,
             self.output_channel,
             self.output_size,
-            kernel_size = self.kernel_size,
+            kernel_size=self.kernel_size,
             n_blocks=self.n_blocks,
         )
 
@@ -250,7 +259,7 @@ class PlainEncoderStage(EncoderStage):
             self.after_sample_channel,
             dim=self.dim,
             pool_stride=self.pool_stride,
-            kernel_size=self.kernel_size
+            kernel_size=self.kernel_size,
         )
 
 
@@ -285,7 +294,7 @@ class PlainDecoderStage(DecoderStage):
             self.output_channel,
             self.output_size,
             n_blocks=self.n_blocks,
-            kernel_size=self.kernel_size
+            kernel_size=self.kernel_size,
         )
 
     def _build_sample(self):
@@ -302,7 +311,12 @@ BasicStem = RepeatingBlock
 
 class BasicHead(UNetHead):
     def __init__(self, input_channel, output_channel, size):
-        super().__init__(input_size=size, input_channel=input_channel, output_size=size, output_channel=output_channel)
+        super().__init__(
+            input_size=size,
+            input_channel=input_channel,
+            output_size=size,
+            output_channel=output_channel,
+        )
         self.conv = conv(self.dim)(input_channel, output_channel, kernel_size=1)
 
     def _forward(self, x):
@@ -312,7 +326,10 @@ class BasicHead(UNetHead):
 class PlainEncoder(UNetEncoder):
     def _build_stem(self):
         return BasicStem(
-            self.input_channel, self.stem_channel, self.input_size, n_blocks=3,
+            self.input_channel,
+            self.stem_channel,
+            self.input_size,
+            n_blocks=3,
         )
 
     def _build_stages(self):
@@ -321,12 +338,12 @@ class PlainEncoder(UNetEncoder):
             stages.append(
                 PlainEncoderStage(
                     self.skip_channels[i],
-                    self.skip_channels[i] * self.pool_channel_increase_ratio[i],
+                    self.skip_channels[i + 1],
                     self.skip_channels[i + 1],
                     self.skip_size[i],
                     self.skip_size[i + 1],
                     pool_stride=self.pool_strides[i],
-                    kernel_size = self.conv_kernel_size[i]
+                    kernel_size=self.conv_kernel_size[i],
                 )
             )
         return nn.ModuleList(stages)
@@ -356,7 +373,7 @@ class PlainDecoder(UNetDecoder):
                     self.skip_size[i + 1],
                     self.skip_size[i],
                     pool_stride=self.pool_strides[i],
-                    kernel_size=self.conv_kernel_size[i]
+                    kernel_size=self.conv_kernel_size[i],
                 )
             )
         return nn.ModuleList(stages)
@@ -373,6 +390,7 @@ class PlainUNet(UNet):
             self.pool_strides,
             self.pool_channel_increase_ratio,
             self.deep_supervision,
+            self.max_feature_channel
         )
 
     def _build_encoder(self):
@@ -386,4 +404,5 @@ class PlainUNet(UNet):
             self.conv_kernel_size,
             self.pool_strides,
             self.pool_channel_increase_ratio,
+            self.max_feature_channel
         )

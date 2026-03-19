@@ -10,6 +10,7 @@ from experiments.utils import (
     assert_divisable,
 )
 from experiments.plan import Plan
+import sys
 
 
 class Block(nn.Module, ABC):
@@ -84,8 +85,24 @@ class EncoderStage(Stage):
     """
     EncoderStageとは, ダウンサンプリングまたはアップサンプリングを行う関数fとブロックgを用いて, g(f(x))を行う写像
     """
-    def __init__(self, input_channel, after_sample_channel, output_channel, input_size, output_size, pool_stride = 2):
-        super().__init__(input_channel, after_sample_channel, output_channel, input_size, output_size, pool_stride)
+
+    def __init__(
+        self,
+        input_channel,
+        after_sample_channel,
+        output_channel,
+        input_size,
+        output_size,
+        pool_stride=2,
+    ):
+        super().__init__(
+            input_channel,
+            after_sample_channel,
+            output_channel,
+            input_size,
+            output_size,
+            pool_stride,
+        )
         assert_eq(assert_divisable(self.input_size, self.output_size), self.pool_stride)
 
     def forward(self, x: Tensor) -> Tensor:
@@ -136,15 +153,25 @@ class DecoderStage(Stage):
         assert_eq(self.output_channel, channel_of_tensor(out))
         return out
 
+
 UNetStem = Block
 
-class UNetHead(nn.Module):
-    def __init__(self, input_size, input_channel, output_size, output_channel):
+
+class UNetHead(nn.Module, ABC):
+    def __init__(
+        self,
+        input_size,
+        input_channel,
+        output_size,
+        output_channel,
+        max_feature_channel: int = sys.maxsize,
+    ):
         super().__init__()
         self.input_size = input_size
         self.input_channel = input_channel
         self.output_size = output_size
         self.output_channel = output_channel
+        self.max_feature_channel = max_feature_channel
         self.dim = len(self.input_size)
 
     @abstractmethod
@@ -158,8 +185,6 @@ class UNetHead(nn.Module):
         assert_eq(self.output_channel, channel_of_tensor(y))
         return y
 
-
-# UNetHead = Block
 
 class UNetEncoder(nn.Module, ABC):
     """UNet Encoder
@@ -180,6 +205,7 @@ class UNetEncoder(nn.Module, ABC):
         ] = 3,
         pool_strides: Union[int, List[int], Tuple[int, ...], List[Tuple[int, ...]]] = 2,
         pool_channel_increase_ratio: Union[int, List[int]] = 2,
+        max_feature_channel: int = sys.maxsize,
     ):
         """UNetEncoder
 
@@ -215,6 +241,7 @@ class UNetEncoder(nn.Module, ABC):
         self.skip_size = skip_size
         self.pool_strides = pool_strides
         self.pool_channel_increase_ratio = pool_channel_increase_ratio
+        self.max_feature_channel = max_feature_channel
         self.stem = self._build_stem()
         self.stages = self._build_stages()
         assert (
@@ -225,7 +252,7 @@ class UNetEncoder(nn.Module, ABC):
     def _build_stem(self) -> UNetStem: ...
 
     @abstractmethod
-    def _build_stages(self) -> nn.ModuleList[EncoderStage]:
+    def _build_stages(self) -> nn.ModuleList:
         """
         Return
         ------
@@ -235,7 +262,6 @@ class UNetEncoder(nn.Module, ABC):
         """
         ...
 
-    @abstractmethod
     def forward(self, x: Tensor) -> List[Tensor]:
         """forward
 
@@ -274,6 +300,7 @@ class UNetDecoder(nn.Module, ABC):
         pool_strides: Union[int, List[int], Tuple[int, ...], List[Tuple[int, ...]]] = 2,
         pool_channel_increase_ratio: Union[int, List[int]] = 2,
         deep_supervision: bool = False,
+        max_feature_channel: int = sys.maxsize,
     ):
         """UNetDecoder
 
@@ -319,11 +346,12 @@ class UNetDecoder(nn.Module, ABC):
         self.pool_strides = pool_strides
         self.pool_channel_increase_ratio = pool_channel_increase_ratio
         self.deep_supervision = deep_supervision
+        self.max_feature_channel = max_feature_channel
         self.head = self._build_head()
         self.stages = self._build_stages()
 
     @abstractmethod
-    def _build_stages(self) -> nn.ModuleList[DecoderStage]:
+    def _build_stages(self) -> nn.ModuleList:
         """
         Return
         ------
@@ -334,7 +362,7 @@ class UNetDecoder(nn.Module, ABC):
         ...
 
     @abstractmethod
-    def _build_head(self) -> Union[UNetHead, nn.ModuleList[UNetHead]]:
+    def _build_head(self) -> Union[UNetHead, nn.ModuleList]:
         """
         Return
         ------
@@ -344,7 +372,6 @@ class UNetDecoder(nn.Module, ABC):
         """
         ...
 
-    @abstractmethod
     def forward(self, x: List[Tensor]) -> Union[Tensor, List[Tensor]]:
         """forward
 
@@ -410,6 +437,7 @@ class UNet(nn.Module, ABC):
         pool_strides: Union[int, List[int], Tuple[int, ...], List[Tuple[int, ...]]] = 2,
         pool_channel_increase_ratio: Union[int, List[int]] = 2,
         deep_supervision: bool = False,
+        max_feature_channel: int = sys.maxsize,
     ):
         """UNet
 
@@ -447,6 +475,7 @@ class UNet(nn.Module, ABC):
         self.pool_strides = pool_strides
         self.pool_channel_increase_ratio = pool_channel_increase_ratio
         self.deep_supervision = deep_supervision
+        self.max_feature_channel = max_feature_channel
 
         self.conv_kernel_size = self._prolong(self.conv_kernel_size)
         self.pool_strides = self._prolong(self.pool_strides, length=self.n_stages - 1)
@@ -462,16 +491,12 @@ class UNet(nn.Module, ABC):
         former = self.stem_channel
         for ratio in self.pool_channel_increase_ratio:
             former *= ratio
-            self.skip_channels.append(former)
+            self.skip_channels.append(min(former, max_feature_channel))
 
         self.skip_size = [self.patch_size]
         former = self.patch_size
         for stride in self.pool_strides:
-            div = tuple(f // s for f, s in zip(former, stride))
-            norem = tuple(f % s == 0 for f, s in zip(former, stride))
-            assert all(
-                norem
-            ), f"feature map size {former} is not dividable by kernel size {stride}"
+            div = assert_divisable(former, stride)
             self.skip_size.append(div)
             former = div
 
@@ -517,8 +542,6 @@ class UNet(nn.Module, ABC):
             assert_eq(self.n_stages + 1, len(d))
             for i in range(len(d)):
                 assert_eq(self.output_channel, channel_of_tensor(d[i]))
-                # assert_eq(self.skip_size[i], size_of_tensor(d[i])) # UNetHeadはBlockではなく, MIMのヘッドなど, 入力前後で解像度を変化させてもいいものとして定義したため, このアサーションは削除
-            # assert_eq(self.patch_size, size_of_tensor(d[0]))
         else:
             assert_eq(self.patch_size, size_of_tensor(d))
             assert_eq(self.output_channel, channel_of_tensor(d))
@@ -532,7 +555,7 @@ class UNet(nn.Module, ABC):
         output_channel,
         pool_channel_increase_ratio=2,
         deep_supervision: bool = False,
-        **kwargs
+        **kwargs,
     ) -> "UNet":
         return cls(
             patch_size=plan.patch_size,
@@ -544,5 +567,6 @@ class UNet(nn.Module, ABC):
             pool_channel_increase_ratio=pool_channel_increase_ratio,
             deep_supervision=deep_supervision,
             n_stages=len(plan.pool_strides),
-            **kwargs
+            max_feature_channel=plan.max_feature_channel,
+            **kwargs,
         )

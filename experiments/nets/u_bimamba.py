@@ -1,3 +1,5 @@
+from sys import maxsize
+
 from torch import autocast, nn
 import torch
 from mamba_ssm import Mamba
@@ -108,6 +110,7 @@ class MEncoder(PlainEncoder):
         conv_kernel_size=3,
         pool_strides=2,
         pool_channel_increase_ratio=2,
+        max_feature_channel=maxsize,
         d_state=16,
         d_conv=4,
         expand=2,
@@ -125,6 +128,7 @@ class MEncoder(PlainEncoder):
             conv_kernel_size,
             pool_strides,
             pool_channel_increase_ratio,
+            max_feature_channel=max_feature_channel,
         )
 
     def _build_stages(self):
@@ -133,7 +137,7 @@ class MEncoder(PlainEncoder):
             stages.append(
                 MEncoderStage(
                     self.skip_channels[i],
-                    self.skip_channels[i] * self.pool_channel_increase_ratio[i],
+                    self.skip_channels[i + 1],
                     self.skip_channels[i + 1],
                     self.skip_size[i],
                     self.skip_size[i + 1],
@@ -159,6 +163,7 @@ class UBiMamba(PlainUNet):
         pool_strides=2,
         pool_channel_increase_ratio=2,
         deep_supervision=False,
+        max_feature_channel: int = maxsize,
         d_state=16,
         d_conv=4,
         expand=2,
@@ -176,6 +181,7 @@ class UBiMamba(PlainUNet):
             pool_strides,
             pool_channel_increase_ratio,
             deep_supervision,
+            max_feature_channel=max_feature_channel,
         )
 
     def _build_encoder(self):
@@ -189,6 +195,7 @@ class UBiMamba(PlainUNet):
             self.conv_kernel_size,
             self.pool_strides,
             self.pool_channel_increase_ratio,
+            max_feature_channel=self.max_feature_channel,
             d_state=self.d_state,
             d_conv=self.d_conv,
             expand=self.expand,

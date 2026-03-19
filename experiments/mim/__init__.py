@@ -1,34 +1,35 @@
-from experiments.mim.preprocess import PlannedSSLPreprocessor
+from experiments.mim.preprocess import PlannedSSLPreprocessor as Preprocessor
 import argparse, lightning as L
-from experiments.mim.datamodule import SSLDataModule
-from experiments.mim.model import UNetEncoderWithMIM
+from experiments.mim.datamodule import SSLDataModule as DataModule
+from experiments.mim.model import MIMModule as Model
 from lightning.pytorch.loggers import CSVLogger
 from lightning.pytorch.callbacks import ModelCheckpoint
 import torch
 
-from experiments.utils import resolved_path, loaded_json, nowstring
+from experiments.utils import resolved_path, nowstring
 from pathlib import Path
-from experiments.nets.UBiMambaEnc_3d import UMambaEnc
-from experiments.prune import SpacingShapeStrictPruner
-from experiments.analyze import CTAnalyzer
+from experiments.nets.u_bimamba import UBiMamba as UNet
+from experiments.prune import SpacingShapeStrictPruner as Pruner
+from experiments.analyze import CTAnalyzer as Analyzer
 from experiments.plan import Plan
 
 
 def prune(args):
-    SpacingShapeStrictPruner(args)()
+    Pruner(args)()
+
 
 def analyze(args):
-    CTAnalyzer(args)()
+    Analyzer(args)()
+
 
 def preprocess(args):
-    PlannedSSLPreprocessor(args)()
+    Preprocessor(args)()
 
 
 def _train_argparse(args):
     parser = argparse.ArgumentParser()
     parser.add_argument("preprocessed", type=resolved_path)
     parser.add_argument("pretrained", type=resolved_path)
-    parser.add_argument("dataset", type=str)
     parser.add_argument("plan_path", type=resolved_path)
     parser.add_argument("-d", "--devices", type=int, default=[0], nargs="+")
     parser.add_argument("-c", "--ckpt", default=None, type=resolved_path)
@@ -39,19 +40,21 @@ def _train_argparse(args):
 def _train(
     preprocessed: Path,
     pretrained: Path,
-    dataset: str,
     plan_path: str,
     device: int = 0,
     checkpoint: str | None = None,
 ):
     torch.set_float32_matmul_precision("medium")
     plan = Plan(plan_path)
-    ptdir = pretrained / dataset / nowstring()
+    ptdir = pretrained / nowstring()
     ptdir.mkdir(parents=True, exist_ok=True)
     if checkpoint is not None:
         checkpoint = Path(checkpoint)
-    dm = SSLDataModule(preprocessed, dataset, plan)
-    lm = UNetEncoderWithMIM.from_plan(plan, UMambaEnc, 0.6, deep_supervision=True)
+    dm = DataModule(preprocessed, plan)
+    unet = UNet.from_plan(
+        plan, patch_channel=1, output_channel=1, deep_supervision=True
+    )
+    lm = Model(unet, mask_ratio=0.6)
     tr = L.Trainer(
         logger=[CSVLogger(ptdir, name="pretraining.log")],
         devices=device,
@@ -79,7 +82,6 @@ def train(args):
     _train(
         args.preprocessed,
         args.pretrained,
-        args.dataset,
         args.plan_path,
         args.devices,
         args.ckpt,
