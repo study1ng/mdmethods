@@ -27,16 +27,16 @@ def pixelshuffle(dim: int, *scales: int) -> einops.layers.torch.Rearrange:
 
 def generate_mask(
     image: torch.Tensor,
-    mask_shape: tuple[int, int, int],
+    mask_size: tuple[int, int, int],
     mask_ratio: float,
     device: str | None = None,
 ) -> torch.Tensor:
     sh = image.shape
     assert len(sh) == 5
-    assert sh[2] % mask_shape[0] == 0
-    assert sh[3] % mask_shape[1] == 0
-    assert sh[4] % mask_shape[2] == 0
-    msh = (sh[0], 1, *[sh[i + 2] // mask_shape[i] for i in range(3)])
+    assert sh[2] % mask_size[0] == 0
+    assert sh[3] % mask_size[1] == 0
+    assert sh[4] % mask_size[2] == 0
+    msh = (sh[0], 1, *[sh[i + 2] // mask_size[i] for i in range(3)])
     mask = torch.rand(msh, device=device) < mask_ratio
     mask = F.interpolate(mask.float(), sh[2:], mode="nearest")
     return mask
@@ -114,6 +114,7 @@ class MIMModule(L.LightningModule):
             self.mask_size = assert_divisable(
                 self.unet.patch_size, self.unet.skip_size[-1]
             )
+            print("default mask size: ", self.mask_size)
         if self.deep_supervision:
             if isinstance(self.weights, tuple):
                 assert_eq(len(self.unet.decoder.head), len(self.weights))
@@ -164,8 +165,8 @@ class MIMModule(L.LightningModule):
         }
 
     def training_step(self, batch, _):
-        image = batch[image_key]
-        mask = self.mask_fn(image, self.mask_size, self.mask_ratio, self.device)
+        image = batch[image_key] # (B,C,H,W,D)
+        mask = self.mask_fn(image, self.mask_size, self.mask_ratio, self.device) #(B,C,H,W,D)
         # masked = image * (1 - mask) + self.mask_token * mask
         masked = image * (1 - mask)
 
@@ -178,6 +179,6 @@ class MIMModule(L.LightningModule):
             loss = self.loss(out, image)
         l = loss * mask
         l = l.sum() / (mask.sum() * image.shape[1] + 1e-5)
-        l += (loss * self.visible_loss_weight).mean()
+        l = loss.mean() * self.visible_loss_weight + l * (1 - self.visible_loss_weight)
         self.log("training_loss", l, prog_bar=True, on_epoch=True)
         return l

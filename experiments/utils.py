@@ -25,6 +25,11 @@ def loaded_json(p: Path | str) -> object:
 def nowstring():
     return datetime.now().strftime("%Y.%m.%d.%H.%M.%S")
 
+def prolong(v, dim: int, types, wrap_type=tuple):
+    if not isinstance(v, types):
+        return v
+    return wrap_type(v for _ in range(dim))
+
 def element_wise(types, wrap_type = tuple):
     def _element_wise(func):
         @wraps(func)
