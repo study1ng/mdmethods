@@ -8,7 +8,9 @@ from experiments.nets.plainunet import PlainEncoderStage, PlainEncoder, PlainUNe
 from experiments.nets.generic_blocks import SequentialBlock
 
 
-class MambaBlock(Block):
+class BiMambaBlock(Block):
+    """A block which use Bidirectional Mamba"""
+
     def __init__(
         self,
         input_channel,
@@ -56,6 +58,8 @@ class MambaBlock(Block):
 
 
 class MEncoderStage(PlainEncoderStage):
+    """Encoder Stage for BiMamba"""
+
     def __init__(
         self,
         input_channel,
@@ -87,7 +91,7 @@ class MEncoderStage(PlainEncoderStage):
     def _build_block(self):
         return SequentialBlock(
             super()._build_block(),
-            MambaBlock(
+            BiMambaBlock(
                 self.output_channel,
                 self.output_channel,
                 self.output_size,
@@ -99,6 +103,8 @@ class MEncoderStage(PlainEncoderStage):
 
 
 class MEncoder(PlainEncoder):
+    """Encoder for BiMamba"""
+
     def __init__(
         self,
         input_size,
@@ -152,6 +158,8 @@ class MEncoder(PlainEncoder):
 
 
 class UBiMamba(PlainUNet):
+    """UBiMamba"""
+
     def __init__(
         self,
         patch_size,

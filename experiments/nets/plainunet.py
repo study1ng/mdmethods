@@ -10,19 +10,43 @@ from experiments.nets.baseunet import (
 from torch import nn, Tensor
 import torch.nn.functional as F
 from experiments.nets.generic_blocks import SequentialBlock
+from experiments.utils import element_wise
 
-
+@element_wise(int)
 def pad(kernel_size: int | tuple[int, ...]) -> int | tuple[int, ...]:
-    if isinstance(kernel_size, int):
-        assert (kernel_size & 1) == 1, "kernel size should be odd"
-        return kernel_size // 2
-    else:
-        rem = ((ks & 1) == 1 for ks in kernel_size)
-        assert all(rem), "kernel size should be odd"
-        return tuple(ks // 2 for ks in kernel_size)
+    """calculate the pad size from conv kernel size
+
+    Parameters
+    ----------
+    kernel_size : int | tuple[int, ...]
+        kernel size
+
+    Returns
+    -------
+    int | tuple[int, ...]
+        padding size
+    """
+    assert (kernel_size & 1) == 1, "kernel size should be odd"
+    return kernel_size // 2
 
 
 def conv(dim: int):
+    """get the corresponding Conv by dim
+
+    Parameters
+    ----------
+    dim : int
+        the dimension. select from 1~3
+
+    Returns
+    -------
+    nn.Module
+
+    Raises
+    ------
+    ValueError
+        if dim not in {1,2,3}
+    """
     match dim:
         case 1:
             return nn.Conv1d
@@ -35,6 +59,22 @@ def conv(dim: int):
 
 
 def instance_norm(dim: int):
+    """get the corresponding InstanceNorm by dim
+
+    Parameters
+    ----------
+    dim : int
+        the dimension. select from 1~3
+
+    Returns
+    -------
+    nn.Module
+
+    Raises
+    ------
+    ValueError
+        if dim not in {1,2,3}
+    """
     match dim:
         case 1:
             return nn.InstanceNorm1d
@@ -47,6 +87,13 @@ def instance_norm(dim: int):
 
 
 class SingleConvBlock(Block):
+    """A block do conv once
+
+    Parameters
+    ----------
+    *args, **kwargs : any
+    the additional arguments for Conv
+    """
     def __init__(
         self,
         input_channel,
@@ -56,6 +103,13 @@ class SingleConvBlock(Block):
         *args,
         **kwargs,
     ):
+        """
+
+        Parameters
+        ----------
+        *args, **kwargs : any
+        the additional arguments for Conv
+        """
         self.kernel_size = kernel_size
         self.padding = pad(kernel_size)
         super().__init__(input_channel, output_channel, size)
@@ -74,6 +128,8 @@ class SingleConvBlock(Block):
 
 
 class BasicBlock(Block):
+    """Basic Block which does conv for 2 times and do residual connection
+    """
     nonlin = staticmethod(
         lambda *args, **kwargs: nn.LeakyReLU(*args, inplace=True, **kwargs)
     )
@@ -111,6 +167,8 @@ class BasicBlock(Block):
 
 
 class BasicStridedConv(nn.Module):
+    """Down sampling function
+    """
     nonlin = staticmethod(
         lambda *args, **kwargs: nn.LeakyReLU(*args, inplace=True, **kwargs)
     )
@@ -170,6 +228,8 @@ class BasicStridedConv(nn.Module):
 
 
 class UpsampleLayer(nn.Module):
+    """up sampling function
+    """
     def __init__(
         self,
         input_channel,
@@ -197,6 +257,15 @@ class UpsampleLayer(nn.Module):
 
 
 class RepeatingBlock(Block):
+    """repeat a block
+
+    Parameters
+    ----------
+    n_blocks : int
+        how many times to repeat
+    block_fn : Function
+        function which get no argument and return a Block
+    """
     def __init__(
         self,
         input_channel,
@@ -222,6 +291,8 @@ class RepeatingBlock(Block):
 
 
 class PlainEncoderStage(EncoderStage):
+    """Plain UNet Encoder Stage
+    """
     def __init__(
         self,
         input_channel,
@@ -264,6 +335,8 @@ class PlainEncoderStage(EncoderStage):
 
 
 class PlainDecoderStage(DecoderStage):
+    """Plain UNet Decoder Stage
+    """
     def __init__(
         self,
         input_channel,
@@ -305,11 +378,14 @@ class PlainDecoderStage(DecoderStage):
             pool_stride=self.pool_stride,
         )
 
-
 BasicStem = RepeatingBlock
-
+"""
+Plain UNet Stem
+"""
 
 class BasicHead(UNetHead):
+    """Plain UNet Head which is a Block
+    """
     def __init__(self, input_channel, output_channel, size):
         super().__init__(
             input_size=size,
@@ -324,6 +400,8 @@ class BasicHead(UNetHead):
 
 
 class PlainEncoder(UNetEncoder):
+    """Plain UNet Encoder
+    """
     def _build_stem(self):
         return BasicStem(
             self.input_channel,
@@ -350,6 +428,8 @@ class PlainEncoder(UNetEncoder):
 
 
 class PlainDecoder(UNetDecoder):
+    """Plain UNet Decoder
+    """
     def _build_head(self):
         if self.deep_supervision:
             return nn.ModuleList(
@@ -380,6 +460,8 @@ class PlainDecoder(UNetDecoder):
 
 
 class PlainUNet(UNet):
+    """Plain UNet
+    """
     def _build_decoder(self):
         return PlainDecoder(
             self.output_channel,

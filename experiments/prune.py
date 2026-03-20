@@ -1,5 +1,5 @@
 from pathlib import Path
-from abc import abstractmethod, ABC
+from abc import abstractmethod
 from experiments import AnalyzedData
 import argparse
 from experiments.argument_adaptor import ArgumentAdaptor
@@ -19,9 +19,32 @@ from experiments.plan import Plan
 
 
 class Pruner(ArgumentAdaptor):
+    """Prune path in analyzed_path and save them use symbolick link
+    """
     @classmethod
     def is_target(cls, p: Path) -> bool:
+        """whether p need to be processed by this Pruner
+
+        Parameters
+        ----------
+        p : Path
+            target path
+
+        Returns
+        -------
+        bool
+            if p is target
+        """
         return p.suffix == ".gz"
+
+    def get_argument_parser(self) -> argparse.ArgumentParser:
+        parser = super().get_argument_parser()
+        parser.add_argument("-w", "--workers", type=int, default=4)
+        parser.add_argument("analyzed_path", type=resolved_path)
+        parser.add_argument(
+            "target_paths_and_save_paths", type=resolved_path, nargs="+"
+        )
+        return parser
 
     def parse_args(self, args: list[str]):
         parser = self.get_argument_parser()
@@ -35,17 +58,20 @@ class Pruner(ArgumentAdaptor):
             self.save_paths
         ), "target_paths.len != save_paths.len"
 
-    def get_argument_parser(self) -> argparse.ArgumentParser:
-        parser = super().get_argument_parser()
-        parser.add_argument("-w", "--workers", type=int, default=4)
-        parser.add_argument("analyzed_path", type=resolved_path)
-        parser.add_argument(
-            "target_paths_and_save_paths", type=resolved_path, nargs="+"
-        )
-        return parser
-
     @abstractmethod
-    def need_prune(self, data: AnalyzedData) -> bool: ...
+    def need_prune(self, data: AnalyzedData) -> bool: 
+        """if data is needed to be pruned
+
+        Parameters
+        ----------
+        data : AnalyzedData
+            
+
+        Returns
+        -------
+        bool
+        """
+        ...
 
     @staticmethod
     def _all_has_same_key(*dicts) -> bool:
@@ -58,11 +84,12 @@ class Pruner(ArgumentAdaptor):
     def _construct_processing_dict(
         self,
     ) -> dict[str, tuple[AnalyzedData, Sequence[tuple[Path, Path]]]]:
-        """self.target_paths, self.save_pathsから
-        {
-        "name": (analyzed_data, (target_path, save_path)*), ...
-        }
-        という形式の辞書を返す
+        """
+        
+        Returns
+        -------
+        dict[str, tuple[AnalyzedData, Sequence[tuple[Path, Path]]]]
+            {"name": (analyzed_data, (target_path, save_path)*), ...} という形式の辞書を返す.
         """
         analyzed = {}
         for i in self.analyzed:
@@ -103,6 +130,18 @@ class Pruner(ArgumentAdaptor):
     def _process_entry(
         self, analyze: AnalyzedData, *target_and_save: tuple[Path, Path]
     ) -> bool:
+        """process one task
+
+        Parameters
+        ----------
+        analyze : AnalyzedData
+
+
+        Returns
+        -------
+        bool
+            whether it was not pruned
+        """
         if self.need_prune(analyze):
             return False
         for t in target_and_save:
@@ -113,6 +152,15 @@ class Pruner(ArgumentAdaptor):
 
 
 class SpacingShapeStrictPruner(Pruner):
+    """Pruner which use plan to check spacing and shape
+
+    Parameters
+    ----------
+    default_allowed_spacing_factor: float = 1.5
+        the default spacing strictness factor, the higher is strict
+    default_allowed_shape_factor: float = 1.5,
+        the default shape strictness factor, the higher is strict
+    """
     def __init__(
         self,
         args: list[str],
@@ -163,6 +211,8 @@ class SpacingShapeStrictPruner(Pruner):
 
 
 class NoPruner(Pruner):
+    """Pruner which don't prune
+    """
     def need_prune(self, data):
         # no prune
         return False

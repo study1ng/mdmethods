@@ -21,6 +21,7 @@ def preprocess(args, meta):
 
 
 class MIM(PlannedExperiment):
+    """Masked Image Modeling"""
     def __init__(self, args, parsed):
         super().__init__(args, parsed)
         torch.set_float32_matmul_precision("medium")

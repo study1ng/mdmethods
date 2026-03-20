@@ -1,4 +1,4 @@
-from abc import ABC, abstractmethod
+from abc import abstractmethod
 from pathlib import Path
 import argparse
 from monai.transforms import Transform

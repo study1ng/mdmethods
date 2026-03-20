@@ -6,6 +6,7 @@ import torch
 from experiments.utils import (
     assert_eq,
     channel_of_tensor,
+    prolong,
     size_of_tensor,
     assert_divisable,
 )
@@ -14,7 +15,17 @@ import sys
 
 
 class Block(nn.Module, ABC):
-    """Blockは, ある(B, C_1, H, W, D)の入力を受けて, (B, C_2, H, W, D)の出力を返すような写像として定義する."""
+    """Block, is a map which don't break spatial resolution
+
+    Parameters
+    ----------
+    input_channel: int
+        the input channel
+    output_channel: int
+        the output channel
+    size: Tuple[int, ...]
+        the spatial resolution. We'll check if it was broken during forward
+    """
 
     def __init__(self, input_channel: int, output_channel: int, size: Tuple[int, ...]):
         super().__init__()
@@ -24,6 +35,22 @@ class Block(nn.Module, ABC):
         self.dim = len(size)
 
     def forward(self, x: Tensor):
+        """forward and check spatial resolution change
+
+        Parameters
+        ----------
+        x : Tensor
+            expect (B,C,H,W,...)
+
+        Returns
+        -------
+        any
+            anything
+
+        Notes
+        -----
+        don't change this method but change _forward when inherit
+        """
         assert_eq(self.input_channel, channel_of_tensor(x))
         assert_eq(self.size, size_of_tensor(x))
         ret = self._forward(x)
@@ -37,21 +64,40 @@ class Block(nn.Module, ABC):
 
     @abstractmethod
     def _forward(self, x: Tensor) -> Tensor:
-        """
+        """any forward process
+
         Parameters
         ----------
-
         x: Tensor
 
         Return
         ------
-
-        out: Tensor, its shape will be constant during io, out.shape[2:] == x.shape[2:]
+        out: Tensor, its shape will be constant during forward, out.shape[2:] == x.shape[2:]
         """
         ...
 
 
 class Stage(nn.Module, ABC):
+    """Stage, is a composite map defined as f \circ g, where f is Block, g is upsampling or downsampling.
+
+
+    Parameters
+    ----------
+    input_channel : int
+
+    after_sample_channel : int
+        the channel after sampling
+    output_channel : int
+
+    input_size : tuple[int, ...]
+
+    output_size : tuple[int, ...]
+
+    pool_stride : int | tuple[int, ...], optional
+        the stride of pooling function, by default 2
+
+    """
+
     def __init__(
         self,
         input_channel: int,
@@ -61,16 +107,31 @@ class Stage(nn.Module, ABC):
         output_size: tuple[int, ...],
         pool_stride: int | tuple[int, ...] = 2,
     ):
+        """
+
+        Parameters
+        ----------
+        input_channel : int
+
+        after_sample_channel : int
+            the channel after sampling
+        output_channel : int
+
+        input_size : tuple[int, ...]
+
+        output_size : tuple[int, ...]
+
+        pool_stride : int | tuple[int, ...], optional
+            the stride of pooling function, by default 2
+        """
         super().__init__()
         self.input_channel = input_channel
         self.after_sample_channel = after_sample_channel
         self.output_channel = output_channel
         self.input_size = input_size
         self.output_size = output_size
-        self.pool_stride = pool_stride
+        self.pool_stride = prolong(pool_stride, self.dim)
         self.dim = len(self.input_size)
-        if isinstance(self.pool_stride, int):
-            self.pool_stride = (self.pool_stride,) * self.dim
         self.sample = self._build_sample()
         self.block = self._build_block()
 
@@ -83,7 +144,22 @@ class Stage(nn.Module, ABC):
 
 class EncoderStage(Stage):
     """
-    EncoderStageとは, ダウンサンプリングまたはアップサンプリングを行う関数fとブロックgを用いて, g(f(x))を行う写像
+    Encoder Stage is defined as f \circ g where g is downsampling and f is Block
+
+    Parameters
+    ----------
+    input_channel : int
+        
+    after_sample_channel : int
+        the channel after sampling
+    output_channel : int
+        
+    input_size : tuple[int, ...]
+        
+    output_size : tuple[int, ...]
+        
+    pool_stride : int | tuple[int, ...], optional
+        the stride of pooling function, by default 2
     """
 
     def __init__(
@@ -95,6 +171,23 @@ class EncoderStage(Stage):
         output_size,
         pool_stride=2,
     ):
+        """
+        Parameters
+        ----------
+        input_channel : int
+            
+        after_sample_channel : int
+            the channel after sampling
+        output_channel : int
+            
+        input_size : tuple[int, ...]
+            
+        output_size : tuple[int, ...]
+            
+        pool_stride : int | tuple[int, ...], optional
+            the stride of pooling function, by default 2
+        """
+
         super().__init__(
             input_channel,
             after_sample_channel,
@@ -118,7 +211,23 @@ class EncoderStage(Stage):
 
 class DecoderStage(Stage):
     """
-    DecoderStageとは, アップサンプリングを行う関数fとブロックgを用いて, g(f(x) + skip)を行う写像
+    Decoder Stage(x, skip) := f(g(x) + skip), where f is a Block, g is upsampling
+    
+    Parameters
+    ----------
+    input_channel : int
+        
+    after_sample_channel : int
+        the channel after sampling
+    output_channel : int
+        
+    input_size : tuple[int, ...]
+        
+    output_size : tuple[int, ...]
+        
+    pool_stride : int | tuple[int, ...], optional
+        the stride of pooling function, by default 2
+            
     """
 
     def __init__(
@@ -131,6 +240,26 @@ class DecoderStage(Stage):
         output_size,
         pool_stride: int | tuple[int, ...] = 2,
     ):
+        """
+        Parameters
+        ----------
+        input_channel : int
+            
+        after_sample_channel : int
+            the channel after sampling
+
+        skip_channel: int
+            the channel of skip
+        
+        output_channel : int
+            
+        input_size : tuple[int, ...]
+            
+        output_size : tuple[int, ...]
+            
+        pool_stride : int | tuple[int, ...], optional
+            the stride of pooling function, by default 2
+        """
         self.skip_channel = skip_channel
         super().__init__(
             input_channel,
@@ -154,18 +283,42 @@ class DecoderStage(Stage):
         return out
 
 
-UNetStem = Block
 
+UNetStem = Block
+"""UNet Stem is the first element to change the input image's channel
+"""
 
 class UNetHead(nn.Module, ABC):
+    """UNet Head is the output module of UNet
+
+    Parameters
+    ----------
+    input_size : Tuple[int, ...]
+    input_channel : int
+    output_size : Tuple[int, ...]
+    output_channel : int
+    max_feature_channel : int, optional
+        _description_, by default sys.maxsize
+    """
     def __init__(
         self,
-        input_size,
-        input_channel,
-        output_size,
-        output_channel,
+        input_size: Tuple[int, ...],
+        input_channel: int,
+        output_size: Tuple[int, ...],
+        output_channel: int,
         max_feature_channel: int = sys.maxsize,
     ):
+        """
+
+        Parameters
+        ----------
+        input_size : Tuple[int, ...]
+        input_channel : int
+        output_size : Tuple[int, ...]
+        output_channel : int
+        max_feature_channel : int, optional
+            _description_, by default sys.maxsize
+        """
         super().__init__()
         self.input_size = input_size
         self.input_channel = input_channel
@@ -178,6 +331,8 @@ class UNetHead(nn.Module, ABC):
     def _forward(self, x: Tensor) -> Tensor: ...
 
     def forward(self, x: Tensor) -> Tensor:
+        """Change _forward to inherit
+        """
         assert_eq(self.input_size, size_of_tensor(x))
         assert_eq(self.input_channel, channel_of_tensor(x))
         y = self._forward(x)
@@ -187,9 +342,29 @@ class UNetHead(nn.Module, ABC):
 
 
 class UNetEncoder(nn.Module, ABC):
-    """UNet Encoder
+    """UNet Encoder is the module which is composed of UNet Stem and Stages. UNet Encoder should return n_stages + 1 results.
+    The shallowest is stem's result, The deepest is the bottleneck result.
 
-    this module project the result of stem to the input of decoder
+    Parameters
+    ----------
+
+    input_size : Tuple[int, ...]
+        input size, expect like (H, W, D) if 3D
+    input_channel: int
+        input channel, expect be 1 if CT
+    stem_channel: int
+        the channel size of stem,
+    n_stages: int
+        the count of stages , expect like 4
+    conv_kernel_size: Union[int, List[int], Tuple[int, ...], List[Tuple[int, ...]]]
+        the shape of conv kernel size, expect like [(3,3,3), (3,3,3), (3,3,3), (3,3,3)]. 3, (3,3,3), [3,3,3,3] is same meaning
+        default to 3
+    pool_strides: Union[int, List[int], Tuple[int, ...], List[Tuple[int, ...]]]
+        the stride of pool op. expect like [(1,1,1),(2,2,2),(2,2,2),(2,2,2)]. the first element is recommended to be 1.
+        2, [1,2,2,2], (2,2,2) is same meaning. default to 2
+    pool_channel_increase_ratio: Union[int, List[int]]
+        the channel increase ratio of pool op. expect like [2,2,2,2]. 2 is same meaning. default to 2
+    
     """
 
     def __init__(
@@ -207,10 +382,7 @@ class UNetEncoder(nn.Module, ABC):
         pool_channel_increase_ratio: Union[int, List[int]] = 2,
         max_feature_channel: int = sys.maxsize,
     ):
-        """UNetEncoder
-
-        this module project the result of stem to the input of decoder
-
+        """
         Parameters
         ----------
 
@@ -285,7 +457,30 @@ class UNetEncoder(nn.Module, ABC):
 
 class UNetDecoder(nn.Module, ABC):
     """
-    UNetDecoderは, 長さn_stagesのStageのリストとdeep_supervision時にはBlockのリストを, そうでなければBlockを一つ持つ
+    UNetDecoder is a module after encoder, which is composed of Stages and head
+    len(Head) is n_stages + 1 if self.deep_supervision
+    
+    Parameters
+    ----------
+
+    output_channel: int
+        the class of output
+    skip_size: List[Tuple[int, ...]]
+        the feature map size of each skip, 0 is stem, -1 is deepest, expected to be like (H, W, D) if 3D
+    skip_channels: List[int]
+        the feature map channel of each skip, 0 is stem, -1 is deepest,
+    n_stages: int
+        the count of stages , expect like 4
+    conv_kernel_size: Union[int, List[int], Tuple[int, ...], List[Tuple[int, ...]]]
+        the shape of conv kernel size, expect like [(3,3,3), (3,3,3), (3,3,3), (3,3,3)]. 3, (3,3,3), [3,3,3,3] is same meaning
+        default to 3
+    pool_strides: Union[int, List[int], Tuple[int, ...], List[Tuple[int, ...]]]
+        the stride of pool op. expect like [(1,1,1),(2,2,2),(2,2,2),(2,2,2)]. the first element is recommended to be 1.
+        2, [1,2,2,2], (2,2,2) is same meaning. default to 2
+    pool_channel_increase_ratio: Union[int, List[int]]
+        the channel increase ratio of pool op. expect like [2,2,2,2]. 2 is same meaning. default to 2
+    deep_supervision: bool.
+        default to False
     """
 
     def __init__(
@@ -419,9 +614,31 @@ class UNetDecoder(nn.Module, ABC):
 
 
 class UNet(nn.Module, ABC):
-    """UNet
+    """UNet is composed of encoder and decoder
 
-    UNetはencoderとdecoderの二つのモジュールから表されるモデルとして定義する.
+    
+    Parameters
+    ----------
+    patch_size : Tuple[int, ...]
+        patch size, expect like (H, W, D) if 3D
+    patch_channel: int
+        the channel size of patch, expect 1 if CT
+    stem_channel: int
+        the channel size of stem,
+    output_channel: int
+        the channel size of output, expect like its class count + 1(background)
+    n_stages: int
+        the count of stages , expect like 4
+    conv_kernel_size: Union[int, List[int], Tuple[int, ...], List[Tuple[int, ...]]]
+        the shape of conv kernel size, expect like [(3,3,3), (3,3,3), (3,3,3), (3,3,3)]. 3, (3,3,3), [3,3,3,3] is same meaning
+        default to 3
+    pool_strides: Union[int, List[int], Tuple[int, ...], List[Tuple[int, ...]]]
+        the stride of pool op. expect like [(1,1,1),(2,2,2),(2,2,2),(2,2,2)]. the first element is recommended to be 1.
+        2, [1,2,2,2], (2,2,2) is same meaning. default to 2
+    pool_channel_increase_ratio: Union[int, List[int]]
+        the channel increase ratio of pool op. expect like [2,2,2,2]. 2 is same meaning. default to 2
+    deep_supervision: bool.
+        default to False
     """
 
     def __init__(

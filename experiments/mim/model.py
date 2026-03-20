@@ -7,10 +7,24 @@ from experiments.nets import UNet, UNetHead
 from experiments.config import image_key
 from experiments.nets.plainunet import SingleConvBlock
 from math import prod
-from experiments.utils import assert_divisable, assert_eq
+from experiments.utils import assert_divisable, assert_eq, size_of_tensor
 
 
 def pixelshuffle(dim: int, *scales: int) -> einops.layers.torch.Rearrange:
+    """get pixel shuffle layer
+
+    Parameters
+    ----------
+    dim : int
+        dimension
+    *scales: int
+        like (2, 2, 2). the length should be as same as dim
+
+    Returns
+    -------
+    einops.layers.torch.Rearrange
+        pixel shuffle
+    """
     assert_eq(dim, len(scales))
     scale_characters = [f"p{i}" for i in range(dim)]
     scale_pattern = " ".join(scale_characters)
@@ -25,26 +39,36 @@ def pixelshuffle(dim: int, *scales: int) -> einops.layers.torch.Rearrange:
     return einops.layers.torch.Rearrange(pattern, **scale_dict)
 
 
-def generate_mask(
-    image: torch.Tensor,
-    mask_size: tuple[int, int, int],
-    mask_ratio: float,
-    device: str | None = None,
-) -> torch.Tensor:
-    sh = image.shape
-    assert len(sh) == 5
-    assert sh[2] % mask_size[0] == 0
-    assert sh[3] % mask_size[1] == 0
-    assert sh[4] % mask_size[2] == 0
-    msh = (sh[0], 1, *[sh[i + 2] // mask_size[i] for i in range(3)])
-    mask = torch.rand(msh, device=device) < mask_ratio
-    mask = F.interpolate(mask.float(), sh[2:], mode="nearest")
-    return mask
+class MaskGenerator(nn.Module):
+    def __init__(
+        self,
+        mask_size: tuple[int, int, int],
+        mask_ratio: float,
+    ):
+        super().__init__()
+        self.mask_size = mask_size
+        self.mask_ratio = mask_ratio
+
+    @torch.no_grad()
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        sh = x.shape
+        assert len(sh) == 5
+        scales = assert_divisable(size_of_tensor(x), self.mask_size)
+        msh = (sh[0], 1, *scales)
+        mask = torch.rand(msh, device=x.device) < self.mask_ratio
+        mask = F.interpolate(mask.float(), sh[2:], mode="nearest")
+        return mask
+
+
 
 
 class RevertResolutionHead(UNetHead):
+    """A head which output size is as same as unet patch size.
+    """
     @classmethod
     def attach_to_unet(cls, unet: UNet) -> UNet:
+        """change the unet head to myself
+        """
         if unet.deep_supervision:
             head = nn.ModuleList(
                 tuple(
@@ -88,11 +112,14 @@ class PixelShuffleHead(RevertResolutionHead):
 
 
 class MIMModule(L.LightningModule):
+    """A module which does Masking Image Modeling
+    """
     def __init__(
         self,
         unet: UNet,
         mask_ratio: float,
-        mask_fn=generate_mask,
+        mask_gen = MaskGenerator,
+        head_fn = PixelShuffleHead.attach_to_unet,
         mask_size: tuple[int, ...] | None = None,
         weights: float | tuple[float, ...] | None = None,
         loss_fn=partial(nn.L1Loss, reduction="none"),
@@ -100,11 +127,11 @@ class MIMModule(L.LightningModule):
     ):
         super().__init__()
         self.save_hyperparameters(ignore=["unet"])
-        self.unet = PixelShuffleHead.attach_to_unet(unet)
+        self.head = head_fn
+        self.unet = head_fn.attach_to_unet(unet)
         print(self.unet)
         self.deep_supervision = unet.deep_supervision
         self.mask_ratio = mask_ratio
-        self.mask_fn = mask_fn
         self.mask_size = mask_size
         self.weights = weights
         self.visible_loss_weight = visible_loss_weight
@@ -115,6 +142,7 @@ class MIMModule(L.LightningModule):
                 self.unet.patch_size, self.unet.skip_size[-1]
             )
             print("default mask size: ", self.mask_size)
+        self.mask_fn = mask_gen(self.mask_size, self.mask_ratio)
         if self.deep_supervision:
             if isinstance(self.weights, tuple):
                 assert_eq(len(self.unet.decoder.head), len(self.weights))
@@ -132,7 +160,7 @@ class MIMModule(L.LightningModule):
         return self.unet(x)
 
     def configure_optimizers(self):
-        self.optim = torch.optim.AdamW(
+        optim = torch.optim.AdamW(
             self.unet.parameters(),
             lr=4e-4,
             eps=1e-5,
@@ -141,8 +169,8 @@ class MIMModule(L.LightningModule):
         )
         total_steps = self.trainer.estimated_stepping_batches
         warmup_steps = total_steps // 10
-        self.scheduler = torch.optim.lr_scheduler.SequentialLR(
-            self.optim,
+        scheduler = torch.optim.lr_scheduler.SequentialLR(
+            optim,
             [
                 torch.optim.lr_scheduler.LinearLR(
                     self.optim,
@@ -157,16 +185,18 @@ class MIMModule(L.LightningModule):
             milestones=[warmup_steps],
         )
         return {
-            "optimizer": self.optim,
+            "optimizer": optim,
             "lr_scheduler": {
-                "scheduler": self.scheduler,
+                "scheduler": scheduler,
                 "interval": "step",
             },
         }
 
     def training_step(self, batch, _):
-        image = batch[image_key] # (B,C,H,W,D)
-        mask = self.mask_fn(image, self.mask_size, self.mask_ratio, self.device) #(B,C,H,W,D)
+        image = batch[image_key]  # (B,C,H,W,D)
+        mask = self.mask_fn(
+            image
+        )  # (B,C,H,W,D)
         # masked = image * (1 - mask) + self.mask_token * mask
         masked = image * (1 - mask)
 
@@ -178,7 +208,11 @@ class MIMModule(L.LightningModule):
         else:
             loss = self.loss(out, image)
         l = loss * mask
-        l = l.sum() / (mask.sum() * image.shape[1] + 1e-5)
-        l = loss.mean() * self.visible_loss_weight + l * (1 - self.visible_loss_weight)
+        l = l.sum() / (mask.sum() * image.shape[1] + 1e-5)        
+        vl = loss * (1 - mask)
+        vl = vl.sum() / (
+            (1 - mask).sum() * image.shape[1] + 1e-5
+        )  # visible loss
+        l = vl * self.visible_loss_weight + l * (1 - self.visible_loss_weight)
         self.log("training_loss", l, prog_bar=True, on_epoch=True)
         return l

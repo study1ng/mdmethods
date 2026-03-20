@@ -15,7 +15,7 @@ from experiments.utils import (
 import math
 import einops
 import torch.nn.functional as F
-from experiments.mim.model import generate_mask
+from experiments.mim.model import MaskGenerator
 from math import prod
 from experiments.config import image_key
 import lightning as L
@@ -228,6 +228,8 @@ class HogLayer3D(nn.Module):
 
 
 class HogHead(UNetHead):
+    """A head which predict HOG"""
+
     def __init__(
         self, input_size, input_channel, output_size, output_channel, hog_channel: int
     ):
@@ -286,7 +288,8 @@ class HogHead(UNetHead):
         return self.ps(x)
 
     @classmethod
-    def attach_to_unet(cls, unet: UNet, hog: HogLayer3D):
+    def attach_to_unet(cls, unet: UNet, hog: HogLayer3D) -> UNet:
+        """automatically change the unet head to HogHead"""
         assert hog.block_size == (
             1,
             1,
@@ -366,7 +369,7 @@ class MaskFeatModule(L.LightningModule):
         self,
         unet: UNet,
         mask_ratio: float,
-        mask_fn=generate_mask,
+        mask_gen=MaskGenerator,
         mask_size: tuple[int, ...] | None = None,
         weights: float | tuple[float, ...] | None = None,
         loss_fn=partial(nn.MSELoss, reduction="none"),
@@ -379,7 +382,6 @@ class MaskFeatModule(L.LightningModule):
         self.save_hyperparameters(ignore=["unet"])
         self.unet = unet
         self.deep_supervision = unet.deep_supervision
-        self.mask_fn = mask_fn
         self.mask_ratio = mask_ratio
         self.mask_size = mask_size
         self.weights = weights
@@ -432,6 +434,8 @@ class MaskFeatModule(L.LightningModule):
             self.weights /= self.weights.sum()
             self.register_buffer("head_weights", self.weights)
 
+        self.mask_fn = mask_gen(self.mask_size, self.mask_ratio)
+
     def forward(self, x: Tensor):
         return self.unet(x)
 
@@ -471,9 +475,7 @@ class MaskFeatModule(L.LightningModule):
     def training_step(self, batch, _):
         image = batch[image_key]
         hog = self.hog(image)  # (B,C,H',W',D',bins)
-        mask = self.mask_fn(
-            image, self.mask_size, self.mask_ratio, self.device
-        )  # (B,1,H,W,D)
+        mask = self.mask_fn(image)  # (B,1,H,W,D)
         # masked = image * (1 - mask) + self.mask_token * mask
         masked = image * (1 - mask)
         out = self.unet(masked)  # (B,C,H',W',D',bins)

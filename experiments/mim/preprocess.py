@@ -7,6 +7,8 @@ from experiments.config import image_key
 from experiments.plan import Plan
 
 class PlannedSSLPreprocessor(ImageOnlyPreprocessor):
+    """Self Supervised Learning Preprocessor by plan
+    """
     def __init__(self, args):
         super().__init__(args)
         self.image_key = [image_key]

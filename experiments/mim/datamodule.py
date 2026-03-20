@@ -57,6 +57,8 @@ def augmentation_transforms(keys, plan: Plan):
 
 
 class SSLDataModule(L.LightningDataModule):
+    """Data Module for Self supervised learning which don't need label
+    """
     def __init__(
         self,
         preprocessed_dir: str | Path,
