@@ -2,6 +2,7 @@ from pathlib import Path
 from abc import abstractmethod, ABC
 from experiments import AnalyzedData
 import argparse
+from experiments.argument_adaptor import ArgumentAdaptor
 from experiments.utils import (
     resolved_path,
     loaded_json,
@@ -17,10 +18,7 @@ from experiments.plan import Plan
 
 
 
-class Pruner(ABC):
-    def __init__(self, args: list[str]):
-        self.parse_args(args)
-
+class Pruner(ArgumentAdaptor):
     @classmethod
     def is_target(cls, p: Path) -> bool:
         return p.suffix == ".gz"
@@ -38,7 +36,7 @@ class Pruner(ABC):
         ), "target_paths.len != save_paths.len"
 
     def get_argument_parser(self) -> argparse.ArgumentParser:
-        parser = argparse.ArgumentParser()
+        parser = super().get_argument_parser()
         parser.add_argument("-w", "--workers", type=int, default=4)
         parser.add_argument("analyzed_path", type=resolved_path)
         parser.add_argument(
@@ -118,12 +116,13 @@ class SpacingShapeStrictPruner(Pruner):
     def __init__(
         self,
         args: list[str],
+        meta,
         default_allowed_spacing_factor: float = 1.5,
         default_allowed_shape_factor: float = 1.5,
     ):
         self.default_allowed_spacing_factor = default_allowed_spacing_factor
         self.default_allowed_shape_factor = default_allowed_shape_factor
-        super().__init__(args)
+        super().__init__(args, meta)
 
     def get_argument_parser(self):
         parser = super().get_argument_parser()

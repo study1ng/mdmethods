@@ -2,7 +2,7 @@ import importlib
 import argparse
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("lib", type=str)
     parser.add_argument(
         "method",
@@ -10,6 +10,7 @@ if __name__ == "__main__":
         choices=["analyze", "prune", "preprocess", "train", "inference"],
     )
     parser.add_argument("--experiment_name", type=str, default=None)
+    parser.add_argument("--help-main", action="help")
     parsed, unknown = parser.parse_known_args()
     libname = (
         f"experiments.{parsed.lib}"
@@ -20,4 +21,4 @@ if __name__ == "__main__":
     assert hasattr(
         experimentlib, parsed.method
     ), f"{libname} doesn't have method {parsed.method}"
-    getattr(experimentlib, parsed.method)(unknown)
+    getattr(experimentlib, parsed.method)(unknown, parsed)

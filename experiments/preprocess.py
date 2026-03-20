@@ -4,6 +4,7 @@ import argparse
 from monai.transforms import Transform
 from monai.data import Dataset, DataLoader
 import tqdm
+from experiments.argument_adaptor import ArgumentAdaptor
 from experiments.utils import filekey, resolved_path
 import monai.transforms
 from experiments.config import image_key, label_key
@@ -109,18 +110,11 @@ def _load_dir_to_dict(p: Path) -> dict[str, Path]:
     return ret
 
 
-class Preprocessor(ABC):
-    def __init__(self, args: list[str]):
-        self.parse_args(args)
-
+class Preprocessor(ArgumentAdaptor):
     def get_argument_parser(self) -> argparse.ArgumentParser:
-        parser = argparse.ArgumentParser()
+        parser = super().get_argument_parser()
         parser.add_argument("-w", "--workers", default=4, type=int)
         return parser
-
-    def parse_args(self, args: list[str]):
-        parser = self.get_argument_parser()
-        self.args = parser.parse_args(args)
 
     @abstractmethod
     def preprocess_transform(self) -> Transform: ...

@@ -12,22 +12,16 @@ import concurrent.futures
 import json
 import torch
 import numpy as np
-from abc import ABC, abstractmethod
+from abc import abstractmethod
 from experiments.utils import resolved_path
 import argparse
+from experiments import ArgumentAdaptor
 
-class Analyzer(ABC):    
-    def __init__(self, args: list[str]):
-        self.parse_args(args)
-
+class Analyzer(ArgumentAdaptor):
     def get_argument_parser(self) -> argparse.ArgumentParser:
-        parser = argparse.ArgumentParser()
+        parser = super().get_argument_parser()
         parser.add_argument("-w", "--workers", default=4, type=int)
         return parser
-
-    def parse_args(self, args: list[str]):
-        parser = self.get_argument_parser()
-        self.args = parser.parse_args(args)
 
     @abstractmethod
     def analyze(self, p: Path) -> dict:

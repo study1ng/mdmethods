@@ -52,8 +52,8 @@ class HogLayer3D(nn.Module):
         super().__init__()
         self.cell_size = prolong(cell_size, 3, int)
         self.block_size = prolong(block_size, 3, int)
-        self.spacing = prolong(spacing, (int, float), 3)
-        self.gaussian_window_size = prolong(gaussian_window_size, int, 3)
+        self.spacing = prolong(spacing, 3, (int, float))
+        self.gaussian_window_size = prolong(gaussian_window_size, 3, int)
         self.signed = signed
         if self.signed:
             self.bin_count = 20
@@ -91,7 +91,7 @@ class HogLayer3D(nn.Module):
             [rphi, -phi, 0],
             [-rphi, phi, 0],
         ]
-        m = torch.diag(1. / torch.tensor(self.spacing, dtype=torch.float))
+        m = torch.diag(1.0 / torch.tensor(self.spacing, dtype=torch.float))
         vertexes = torch.tensor(vertexes, dtype=torch.float)
         vertexes = vertexes @ m
         vertexes = F.normalize(vertexes, p=2, dim=1).T
@@ -125,7 +125,7 @@ class HogLayer3D(nn.Module):
         """
         b, c, h, w, d = x.shape
 
-        @element_wise2
+        @element_wise2(int)
         def _pad(i, cs):
             return (cs - i % cs) % cs
 
@@ -208,7 +208,7 @@ class HogLayer3D(nn.Module):
         assert_eq(5, len(input_size))
         b, c, h, w, d = input_size
 
-        @element_wise2
+        @element_wise2(int)
         def _div_ceiling(i, cs):
             return (i + cs - 1) // cs
 
@@ -234,24 +234,51 @@ class HogHead(UNetHead):
         super().__init__(
             input_size, input_channel, output_size + (hog_channel,), output_channel
         )
-        self.scales = assert_divisable(input_size, output_size)
         self.hog_channel = hog_channel
-        self.ps = nn.Sequential(
-            einops.layers.torch.Rearrange(
-                "b c (h p0) (w p1) (d p2) -> b (c p0 p1 p2) h w d",
-                p0=self.scales[0],
-                p1=self.scales[1],
-                p2=self.scales[2],
-            ),
-            SingleConvBlock(
-                input_channel=input_channel * prod(self.scales),
-                output_channel=output_channel * hog_channel,
-                size=output_size,
-                kernel_size=1,
-            ),
-            einops.layers.torch.Rearrange(
-                "b (c p) h w d -> b c h w d p",
-                p=self.hog_channel
+
+        @element_wise2(int)
+        def _ge(a, b):
+            return a > b
+
+        self.shrink = all(_ge(input_size, output_size))
+        self.scales = (
+            assert_divisable(input_size, output_size)
+            if self.shrink
+            else assert_divisable(output_size, input_size)
+        )
+        self.ps = (
+            nn.Sequential(
+                einops.layers.torch.Rearrange(
+                    "b c (h p0) (w p1) (d p2) -> b (c p0 p1 p2) h w d",
+                    p0=self.scales[0],
+                    p1=self.scales[1],
+                    p2=self.scales[2],
+                ),
+                SingleConvBlock(
+                    input_channel=input_channel * prod(self.scales),
+                    output_channel=output_channel * hog_channel,
+                    size=output_size,
+                    kernel_size=1,
+                ),
+                einops.layers.torch.Rearrange(
+                    "b (c p) h w d -> b c h w d p", p=self.hog_channel
+                ),
+            )
+            if self.shrink
+            else nn.Sequential(
+                SingleConvBlock(
+                    input_channel=input_channel,
+                    output_channel=output_channel * prod(self.scales) * hog_channel,
+                    size=input_size,
+                    kernel_size=1,
+                ),
+                einops.layers.torch.Rearrange(
+                    "b (c p0 p1 p2 p) h w d -> b c (h p0) (w p1) (d p2) p",
+                    p=hog_channel,
+                    p0=self.scales[0],
+                    p1=self.scales[1],
+                    p2=self.scales[2],
+                ),
             )
         )
 
@@ -260,12 +287,16 @@ class HogHead(UNetHead):
 
     @classmethod
     def attach_to_unet(cls, unet: UNet, hog: HogLayer3D):
-        assert (
-            hog.block_size == (1,1,1)
+        assert hog.block_size == (
+            1,
+            1,
+            1,
         ), "We don't support for hog block normalization cuz that will make output hog resolution not divisors of input image resolution"
         unet_output_shape = (1, unet.output_channel, *unet.patch_size)
         output_shape = hog.output_size(unet_output_shape)
-        output_channel = unet.patch_channel # HOG channel would be as same as input channel
+        output_channel = (
+            unet.patch_channel
+        )  # HOG channel would be as same as input channel
         output_size = output_shape[2:5]
         hog_channel = output_shape[5]
 
@@ -308,7 +339,7 @@ class MaskFeatModule(L.LightningModule):
     mask_fn : function which argument is (image, mask_size, mask_ratio, device=None), and return a binary mask which shape is same as image
         Function which generate mask
     mask_size : tuple[int, int, int] | None
-        Mask size. 
+        Mask size.
     weights : float | tuple[float, ...] | None = None
         Weights used if deep supervision.
         If weights is float, the k nd stage's weight would be weights ** k.
@@ -330,6 +361,7 @@ class MaskFeatModule(L.LightningModule):
     HOG block size is fixed to 1, meaning we will not use block normalization.
     This is intended not to break the spatial relationship between mask patch and cell.
     """
+
     def __init__(
         self,
         unet: UNet,
@@ -345,6 +377,7 @@ class MaskFeatModule(L.LightningModule):
     ):
         super().__init__()
         self.save_hyperparameters(ignore=["unet"])
+        self.unet = unet
         self.deep_supervision = unet.deep_supervision
         self.mask_fn = mask_fn
         self.mask_ratio = mask_ratio
@@ -364,7 +397,7 @@ class MaskFeatModule(L.LightningModule):
         if cell_size is None:
             self.cell_size = self.unet.skip_size[-1]  # (7,7,8)
 
-            @element_wise2
+            @element_wise2(int)
             def _find_closest_divisor(i, j):
                 """iの約数のうち, 最もjと値が近いものを返す"""
                 divisors = sympy.divisors(i)
@@ -375,16 +408,14 @@ class MaskFeatModule(L.LightningModule):
             self.cell_size = _find_closest_divisor(self.mask_size, self.cell_size)
             print("default cell size: ", self.cell_size)
 
-        self.cell_per_mask = assert_divisable(
-            self.mask_size, self.cell_size
-        )
+        self.cell_per_mask = assert_divisable(self.mask_size, self.cell_size)
 
         self.hog = HogLayer3D(
-                    cell_size=self.cell_size,
-                    block_size=1,  # ブロックでの正規化は行わない
-                    gaussian_window_size=self.gaussian_window_size,
-                    signed=self.signed,
-                )
+            cell_size=self.cell_size,
+            block_size=1,  # ブロックでの正規化は行わない
+            gaussian_window_size=self.gaussian_window_size,
+            signed=self.signed,
+        )
         self.unet = HogHead.attach_to_unet(unet, self.hog)
         print(self.unet)
 
@@ -401,7 +432,6 @@ class MaskFeatModule(L.LightningModule):
             self.weights /= self.weights.sum()
             self.register_buffer("head_weights", self.weights)
 
-        
     def forward(self, x: Tensor):
         return self.unet(x)
 
@@ -447,9 +477,9 @@ class MaskFeatModule(L.LightningModule):
         # masked = image * (1 - mask) + self.mask_token * mask
         masked = image * (1 - mask)
         out = self.unet(masked)  # (B,C,H',W',D',bins)
-        cell_mask = F.interpolate(
-            mask, size=hog.shape[2:5], mode="nearest"
-        ).unsqueeze(-1) # (B,1,H,W,D,1)
+        cell_mask = F.interpolate(mask, size=hog.shape[2:5], mode="nearest").unsqueeze(
+            -1
+        )  # (B,1,H,W,D,1)
 
         if self.deep_supervision:
             loss = 0
@@ -458,9 +488,13 @@ class MaskFeatModule(L.LightningModule):
         else:
             loss = self.loss(out, hog)
         l = loss * cell_mask
-        l = l.sum() / (cell_mask.sum() * hog.shape[1] * hog.shape[-1] + 1e-5)  # masked_loss
+        l = l.sum() / (
+            cell_mask.sum() * hog.shape[1] * hog.shape[-1] + 1e-5
+        )  # masked_loss
         vl = loss * (1 - cell_mask)
-        vl = vl.sum() / ((1 - cell_mask).sum() * hog.shape[1] * hog.shape[-1] + 1e-5) # visible loss
+        vl = vl.sum() / (
+            (1 - cell_mask).sum() * hog.shape[1] * hog.shape[-1] + 1e-5
+        )  # visible loss
         l = vl * self.visible_loss_weight + l * (1 - self.visible_loss_weight)
         self.log("training_loss", l, prog_bar=True, on_epoch=True)
         return l
