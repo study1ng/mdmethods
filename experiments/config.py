@@ -54,3 +54,6 @@ def default_training_config(save_path: Path, meta, devices):
         "callbacks": default_callbacks(save_path),
         "accelerator": "gpu",
     }
+
+
+assertion = False

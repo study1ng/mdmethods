@@ -1,13 +1,15 @@
 from pathlib import Path
 import json
 from datetime import datetime
-from functools import wraps
+from functools import partial, wraps
 from shutil import rmtree
 import uuid
 import threading
-from typing import Tuple, Union
+from typing import Callable, Tuple, Union
+import warnings
 from torch import Tensor
 import torch
+
 
 def filekey(filepath: Path | str) -> str:
     """get a id of a path
@@ -25,6 +27,7 @@ def filekey(filepath: Path | str) -> str:
     key = Path(filepath).name.split(".")[0].split("_")[0]
     return key
 
+
 def resolved_path(p: Path | str) -> Path:
     """return a resolved path
 
@@ -39,6 +42,7 @@ def resolved_path(p: Path | str) -> Path:
         resolved path
     """
     return Path(p).expanduser().resolve()
+
 
 def loaded_json(p: Path | str) -> object:
     """return a loaded json from path
@@ -58,6 +62,7 @@ def loaded_json(p: Path | str) -> object:
         ret = json.load(f)
     return ret
 
+
 def nowstring() -> str:
     """current time string
 
@@ -67,6 +72,7 @@ def nowstring() -> str:
         current time
     """
     return datetime.now().strftime("%Y.%m.%d.%H.%M.%S")
+
 
 def prolong(v, dim: int, types, wrap_type=tuple):
     """if v is types, then repeat it for dim times
@@ -95,7 +101,8 @@ def prolong(v, dim: int, types, wrap_type=tuple):
         return v
     return wrap_type(v for _ in range(dim))
 
-def element_wise(types, wrap_type = tuple):
+
+def element_wise(types, wrap_type=tuple):
     """wrapper to make a function can be used for Iterable
 
     Parameters
@@ -122,6 +129,7 @@ def element_wise(types, wrap_type = tuple):
     >>> c
     ```
     """
+
     def _element_wise(func):
         @wraps(func)
         def wrapper(arg):
@@ -129,10 +137,13 @@ def element_wise(types, wrap_type = tuple):
                 return func(arg)
             else:
                 return wrap_type(func(a) for a in arg)
+
         return wrapper
+
     return _element_wise
 
-def element_wise2(types, wrap_type = tuple):
+
+def element_wise2(types, wrap_type=tuple):
     """like element_wise, but get two argument. if both is not types, assert its length is same
 
     Parameters
@@ -154,6 +165,7 @@ def element_wise2(types, wrap_type = tuple):
     assert add((1, 2), (3, 4)) == (4, 6)
     assert add("ab", "de") == ("ad", "be") # str is not int so it will be handled as a Iterable and each element character enter add
     """
+
     def _element_wise2(func):
         @wraps(func)
         def wrapper(arg1, arg2):
@@ -164,11 +176,16 @@ def element_wise2(types, wrap_type = tuple):
             if not isinstance(arg1, types) and isinstance(arg2, types):
                 return wrap_type(func(a, arg2) for a in arg1)
             return wrap_type(func(a, b) for a, b in zip(arg1, arg2, strict=True))
+
         return wrapper
+
     return _element_wise2
+
 
 def _bg_rmtree(path: Path):
     rmtree(path)
+
+
 def ensure_dir_new(p: Path | str) -> Path:
     """ensure a directory is empty
 
@@ -190,6 +207,7 @@ def ensure_dir_new(p: Path | str) -> Path:
     p.mkdir(exist_ok=True, parents=True)
     return p
 
+
 def set_symln(from_: Path | str, to: Path | str):
     """create a symbolic link from from_ to to
 
@@ -199,7 +217,7 @@ def set_symln(from_: Path | str, to: Path | str):
         from
     to : Path | str
         to
-    
+
     Notes:
     ------
     We assert from_ exist.
@@ -208,8 +226,9 @@ def set_symln(from_: Path | str, to: Path | str):
     from_ = resolved_path(from_)
     assert_file_exist(from_)
     to = resolved_path(to)
-    to.unlink(missing_ok = True)
+    to.unlink(missing_ok=True)
     to.symlink_to(from_)
+
 
 def assert_file_exist(p: Path | str):
     """assert a file exist
@@ -221,19 +240,22 @@ def assert_file_exist(p: Path | str):
     """
     assert resolved_path(p).exists(), f"{p} is not exists"
 
+
 def assert_eq(expected, found, message: str | None = None):
     """assert two value is existing
 
     Parameters
     ----------
     expected : any
-        
+
     found : any
-        
+
     message : str | None, optional
         any message, by default f"expected {expected}, found {found}"
     """
-    assert expected == found, f"expected {expected}, found {found}" if message is None else message
+    assert expected == found, (
+        f"expected {expected}, found {found}" if message is None else message
+    )
 
 
 def channel_of_tensor(x: Tensor) -> int:
@@ -251,6 +273,7 @@ def channel_of_tensor(x: Tensor) -> int:
     """
     return x.shape[1]
 
+
 def size_of_tensor(x: Tensor) -> Tuple[int, ...]:
     """sugar syntax for x.shape[2:]
 
@@ -266,21 +289,31 @@ def size_of_tensor(x: Tensor) -> Tuple[int, ...]:
     """
     return x.shape[2:]
 
+
 @element_wise2(int)
 def _modulo(l, r):
     return l % r == 0
+
 
 @element_wise2(int)
 def _div(l, r):
     return l // r
 
-def divmod_accept_tuple(lhs: int | Tuple[int, ...], rhs: int | Tuple[int, ...]) -> Tuple[Union[int, Tuple[int, ...]], Union[int, Tuple[int, ...]]]:
+
+@element_wise2((int, float))
+def _mul(l, r):
+    return l * r
+
+
+def divmod_accept_tuple(
+    lhs: int | Tuple[int, ...], rhs: int | Tuple[int, ...]
+) -> Tuple[Union[int, Tuple[int, ...]], Union[int, Tuple[int, ...]]]:
     """divmod(lhs, rhs), but accept tuple
 
     Parameters
     ----------
     lhs : int | Tuple[int, ...]
-        
+
     rhs : int | Tuple[int, ...]
 
     Returns
@@ -290,15 +323,18 @@ def divmod_accept_tuple(lhs: int | Tuple[int, ...], rhs: int | Tuple[int, ...]) 
     """
     return (_div(lhs, rhs), _modulo(lhs, rhs))
 
-def assert_divisable(lhs: int | Tuple[int, ...], rhs: int | Tuple[int, ...]) -> Union[int, Tuple[int, ...]]:
+
+def assert_divisable(
+    lhs: int | Tuple[int, ...], rhs: int | Tuple[int, ...]
+) -> Union[int, Tuple[int, ...]]:
     """assert rhs is all divisors of lhs, and return lhs // rhs
 
     Parameters
     ----------
     lhs : int | Tuple[int, ...]
-        
+
     rhs : int | Tuple[int, ...]
-        
+
 
     Returns
     -------
@@ -309,14 +345,17 @@ def assert_divisable(lhs: int | Tuple[int, ...], rhs: int | Tuple[int, ...]) -> 
     assert all(m), f"not dividable, lhs: {lhs}, rhs: {rhs}"
     return div
 
+
 def _get_gaussian_kernel(gaussian_window_size: tuple[int, ...], std: tuple[float, ...]):
     assert_eq(gaussian_window_size, std)
+
     def _1dkernel(ws: int, s: int):
         n = torch.arange(0, ws).float()
         n -= n.mean()
         n /= s
         w = torch.exp(-0.5 * n**2)
         return w
+
     _1dkernels = tuple(_1dkernel(ws, s) for ws, s in zip(gaussian_window_size, std))
     former = _1dkernels[0]
     for kernel in _1dkernels[1:]:
@@ -324,7 +363,12 @@ def _get_gaussian_kernel(gaussian_window_size: tuple[int, ...], std: tuple[float
     former /= former.sum()
     return former
 
-def get_gaussian_kernel(gaussian_window_size: int | tuple[int, ...], std: float | tuple[float], dim: int | None = None):
+
+def get_gaussian_kernel(
+    gaussian_window_size: int | tuple[int, ...],
+    std: float | tuple[float],
+    dim: int | None = None,
+):
     """return the gaussian kernel
 
     Parameters
@@ -347,10 +391,99 @@ def get_gaussian_kernel(gaussian_window_size: int | tuple[int, ...], std: float 
         elif isinstance(std, (tuple, list)):
             dim = len(std)
         else:
-            dim = 1 # 1d
+            dim = 1  # 1d
     if isinstance(gaussian_window_size, int):
         gaussian_window_size = (gaussian_window_size,) * dim
     if isinstance(std, (int, float)):
         std = (std,) * dim
     assert_eq(len(gaussian_window_size), len(std))
     return _get_gaussian_kernel(gaussian_window_size, std)
+
+
+def assert_shape_change(
+    input_shape: int | tuple[int, ...] | None = None,
+    output_shape: int | tuple[int, ...] | None = None,
+    shape_fn: Callable[[int | tuple[int, ...]], int | tuple[int, ...]] | None = None,
+    dim: int | slice = slice(),
+):
+    if not (input_shape is None and output_shape is None) and shape_fn is not None:
+        warnings.warn(
+            """Either input_shape or output_shape is provided alongside shape_fn.
+            shape_fn is intended to be used when you know neither input_shape nor output_shape.
+            Try to set both input_shape and output_shape."""
+        )
+
+    def _assert_shape_change_dec(func):
+        @wraps(func)
+        def wrapper(self, x, *args, **kwargs):
+            shape = x.shape[dim]
+            if input_shape is not None:
+                assert_eq(input_shape, shape)
+            y = func(self, x, *args, **kwargs)
+            if output_shape is not None:
+                assert_eq(output_shape, y.shape[dim])
+            if shape_fn is not None:
+                assert_eq(shape_fn(shape), y.shape[dim])
+            return y
+
+        return wrapper
+
+    return _assert_shape_change_dec
+
+
+def identity(x):
+    return x
+
+
+def scale_shape_fn(scale: int | tuple[int, ...], shrink=False):
+    def _shape_fn(shape: int | tuple[int, ...]):
+        if shrink:
+            return _div(shape, scale)
+        return _mul(shape, scale)
+
+    return _shape_fn
+
+
+def assert_shape(
+    input_shape: int | tuple[int, ...] | None = None,
+    output_shape: int | tuple[int, ...] | None = None,
+    shape_fn: Callable[[int | tuple[int, ...]], int | tuple[int, ...]] | None = None,
+    dim: int | slice = slice(),
+):
+    if not (input_shape is None and output_shape is None) and shape_fn is not None:
+        warnings.warn(
+            """Either input_shape or output_shape is provided alongside shape_fn.
+            shape_fn is intended to be used when you know neither input_shape nor output_shape.
+            Try to set both input_shape and output_shape."""
+        )
+
+    @element_wise2(Tensor)
+    def wrapper(x: Tensor, y: Tensor):
+        shape = x.shape[dim]
+        if input_shape is not None:
+            assert_eq(input_shape, shape)
+        if output_shape is not None:
+            assert_eq(output_shape, y.shape[dim])
+        if shape_fn is not None:
+            assert_eq(shape_fn(shape), y.shape[dim])
+
+    return wrapper
+
+
+size_dim = slice(
+    2,
+)
+channel_dim = 1
+
+assert_no_shape_change = partial(assert_shape, shape_fn=identity)
+assert_no_size_change = assert_no_shape_change(dim=size_dim)
+assert_no_channel_change = assert_no_shape_change(dim=channel_dim)
+
+assert_no_shape_change_dec = partial(assert_shape_change, shape_fn=identity)
+assert_no_size_change_dec = assert_no_shape_change_dec(dim=size_dim)
+assert_no_channel_change_dec = assert_no_shape_change_dec(dim=channel_dim)
+
+assert_channel = partial(assert_shape, dim=channel_dim)
+assert_size = partial(assert_shape, dim=size_dim)
+assert_channel_dec = partial(assert_shape_change, dim=channel_dim)
+assert_size_dec = partial(assert_shape_change, dim=size_dim)
