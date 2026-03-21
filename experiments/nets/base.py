@@ -48,12 +48,12 @@ class Assertions(Assertion):
 class AssertShape(Assertion):
     def __init__(
         self,
-        input_shape: int | tuple[int, ...] | Callable[[int]] | None = None,
-        output_shape: int | tuple[int, ...] | Callable[[int]] | None = None,
+        input_shape: int | tuple[int, ...] | Callable[[int], None] | None = None,
+        output_shape: int | tuple[int, ...] | Callable[[int], None] | None = None,
         shape_fn: (
             Callable[[int | tuple[int, ...]], int | tuple[int, ...]] | None
         ) = None,
-        dim: int | slice = slice(),
+        dim: int | slice = slice(None),
     ):
         if (
             isinstance(input_shape, (int, tuple))
@@ -89,6 +89,7 @@ Try to set both input_shape and output_shape."""
         y = args[-1]
         self._assert(x, y)
 
+
 class AssertChannel(AssertShape):
     def __init__(self, input_shape=None, output_shape=None, shape_fn=None):
         super().__init__(input_shape, output_shape, shape_fn, dim=channel_dim)
@@ -100,7 +101,7 @@ class AssertSize(AssertShape):
 
 
 class AssertNoShapeChange(AssertShape):
-    def __init__(self, dim=slice()):
+    def __init__(self, dim=slice(None)):
         super().__init__(None, None, identity, dim=dim)
 
 
@@ -280,8 +281,8 @@ class UNetHead(BaseUNetModule):
         self.input_channel = input_channel
         self.bound_assertion(AssertChannel(self.input_channel))
 
-    @abstractmethod
     @classmethod
+    @abstractmethod
     def attach_to_unet(cls, unet: "UNet", *args, **kwargs):
         """Dynamically change UNet head."""
         ...
@@ -499,11 +500,13 @@ class UNet(BaseUNetModule):
 
         assert_eq(self.n_stages + 1, len(self.skip_channels))
 
+        # まずはコンテナに統一
         if isinstance(self.decoder_pool_scales, (int, Fraction)):
             self.decoder_pool_scales = repeat(
                 to_fraction(self.decoder_pool_scales), self.dim
             )
 
+        # 外側がtupleかlistかに応じて
         if isinstance(self.decoder_pool_scales, tuple):
             self.decoder_pool_scales = repeat(
                 to_fraction(self.decoder_pool_scales), self.n_stages, wrap_type=list
@@ -585,6 +588,10 @@ class UNet(BaseUNetModule):
     ):
         return cls(
             **cls._plan_to_arguments(
-                plan, input_channel, skip_channel_ratio, deep_supervision, **kwargs
+                plan=plan,
+                input_channel=input_channel,
+                skip_channel_ratio=skip_channel_ratio,
+                deep_supervision=deep_supervision,
+                **kwargs,
             )
         )

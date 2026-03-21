@@ -137,8 +137,6 @@ class ConvBlock(Block):
 
 
 class StridedConv(Pool):
-    conv = ConvBlock.conv
-
     def __init__(
         self,
         input_channel,
@@ -158,7 +156,7 @@ class StridedConv(Pool):
         except AssertionError:
             raise AssertionError(f"Strided Conv only accepts reciprocal of integer")
         
-        self.module = self.conv(self.dim)(
+        self.module = ConvBlock.conv(self.dim)(
             self.input_channel,
             self.output_channel,
             self.kernel_size,

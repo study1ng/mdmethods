@@ -1,3 +1,5 @@
+from gc import callbacks
+
 from lightning import LightningDataModule, LightningModule, Trainer
 
 from experiments import ArgumentAdaptor
@@ -60,6 +62,7 @@ class PlannedExperiment(Experiment):
     def get_argument_parser(self):
         parser = super().get_argument_parser()
         parser.add_argument("plan_path", type=resolved_path)
+        return parser
 
     def parse_args(self, args):
         super().parse_args(args)

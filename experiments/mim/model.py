@@ -1,3 +1,4 @@
+from enum import Enum, auto
 from fractions import Fraction
 from logging import warning
 import math
@@ -7,9 +8,10 @@ from torch import nn, tensor, Tensor
 import torch.nn.functional as F
 from functools import partial
 from experiments.nets.base import Pool, UNetHead
+import experiments.config
 from experiments.config import image_key
 from experiments.nets.generic_modules import ConvBlock
-from math import prod
+from math import inf, prod
 from experiments.nets.plainunet import PlainUNet
 from experiments.utils import (
     assert_divisible,
@@ -26,6 +28,7 @@ from experiments.utils import (
 )
 
 
+
 class RearrangePool(Pool):
     def __init__(self, input_channel, pool_scale: Fraction | tuple[Fraction, ...]):
         expand_scale = numerator(pool_scale)
@@ -38,7 +41,7 @@ class RearrangePool(Pool):
 
     @staticmethod
     def rearrange(pool_scale: Fraction | tuple[Fraction, ...]):
-        if isinstance(pool_scale):
+        if isinstance(pool_scale, Fraction):
             pool_scale = (pool_scale,)
         dim = len(pool_scale)
         expand_scale = numerator(pool_scale)
@@ -75,6 +78,16 @@ class RearrangePool(Pool):
         return self.module(x)
 
 
+class ConvPosition(Enum):
+    CONV_FIRST = auto()
+    CONV_LAST = auto()
+    SHRINK_FIRST = auto()
+    EXPAND_FIRST = auto()
+
+    @classmethod
+    def default(cls):
+        return cls.CONV_FIRST
+
 class PixelShufflePool(Pool):
     def __init__(
         self,
@@ -82,28 +95,33 @@ class PixelShufflePool(Pool):
         output_channel,
         pool_scale: Fraction | tuple[Fraction, ...],
         *,
-        conv_position: float = 1.0,  # -1.: conv -> rearrange, -0.: rearrange(shrink) -> conv -> rearrange(expand), 0.: rearrange(expand) -> conv -> rearrange(shrink), 1.: rearrange -> conv
+        conv_position: ConvPosition = ConvPosition.default(),
         dim: int,
     ):
         self.conv_position = conv_position
+        self.dim = dim
         pool_scale = repeat(pool_scale, dim=dim, types=Fraction)
         super().__init__(input_channel, output_channel, pool_scale)
-        if conv_position == -1.0:
-            self.module = self._conv_first()
-        elif conv_position == -0.0 and math.copysign(1, conv_position) == -1.0:
-            self.module = self._shrink_first()
-        elif conv_position == 0.0:
-            self.module = self._expand_first()
-        elif conv_position == 1.0:
-            self.module = self._conv_last()
-        else:
-            raise ValueError(
-                f"conv_position need to be in -1.0, -0.0, 0.0, 1.0, not {conv_position}"
-            )
+        match conv_position:
+            case ConvPosition.CONV_FIRST:
+                self.module = self._conv_first()
+            case ConvPosition.CONV_LAST:
+                self.module = self._conv_last()
+            case ConvPosition.SHRINK_FIRST:
+                self.module = self._shrink_first()
+            case ConvPosition.EXPAND_FIRST:
+                self.module = self._expand_first()
+            case _:
+                raise ValueError(
+                    f"conv_position need to be in ConvPosition, not {conv_position}"
+                )
 
     def _conv_first(self):
         # conv_channel / pool_scale = output_channel
-        conv_channel = assert_to_integer(self.output_channel * prod(self.pool_scale))
+        try:
+            conv_channel = assert_to_integer(self.output_channel * prod(self.pool_scale))
+        except AssertionError:
+            raise AssertionError(f"conv_channel = output_channel {self.output_channel} * pool_scale {self.pool_scale} would not be an integer")
         return nn.Sequential(
             ConvBlock(
                 input_channel=self.input_channel,
@@ -116,9 +134,12 @@ class PixelShufflePool(Pool):
 
     def _conv_last(self):
         # input_channel / pool_scale = conv_channel
-        conv_channel = assert_to_integer(
-            self.input_channel * prod(reciprocal(self.pool_scale))
-        )
+        try:
+            conv_channel = assert_to_integer(
+                self.input_channel * prod(reciprocal(self.pool_scale))
+            )
+        except AssertionError:
+            raise AssertionError(f"conv_channel = input_channel {self.input_channel} / pool_scale {self.pool_scale} would not be an integer")
         return nn.Sequential(
             RearrangePool(input_channel=self.input_channel, pool_scale=self.pool_scale),
             ConvBlock(
@@ -188,7 +209,7 @@ class MaskGenerator(nn.Module):
         super().__init__()
         self.dim = dim
         self.mask_scale = to_fraction(mask_scale)
-        self.mask_scale = repeat(mask_scale, dim, types=Fraction)
+        self.mask_scale = repeat(self.mask_scale, self.dim, types=Fraction)
         self.mask_ratio = mask_ratio
 
     @torch.no_grad()
@@ -285,7 +306,7 @@ class PixelShuffleHead(RevertResolutionHead):
         pool_scale: Fraction | tuple[Fraction, ...],
         *,
         dim: int,
-        conv_position: float = 1.0,
+        conv_position: ConvPosition = ConvPosition.default(),
     ):
         self.output_channel = output_channel
         self.conv_position = conv_position
@@ -319,7 +340,7 @@ class MIMModule(L.LightningModule):
         loss_fn=partial(nn.L1Loss, reduction="none"),
         visible_loss_weight: float = 0.0,
         *,
-        conv_position: float = 1.0,
+        conv_position: ConvPosition = ConvPosition.default(),
     ):
         super().__init__()
         self.save_hyperparameters(ignore=["unet"])
@@ -328,7 +349,7 @@ class MIMModule(L.LightningModule):
         print(self.unet)
         self.deep_supervision = unet.deep_supervision
         self.mask_ratio = mask_ratio
-        self.scale = mask_scale
+        self.mask_scale = mask_scale
         self.weights = weights
         self.visible_loss_weight = visible_loss_weight
         self.loss = loss_fn()
@@ -370,7 +391,10 @@ class MIMModule(L.LightningModule):
             betas=(0.9, 0.95),
         )
         total_steps = self.trainer.estimated_stepping_batches
-        warmup_steps = total_steps // 10
+        if total_steps != inf:
+            warmup_steps = total_steps // 10
+        else:
+            raise AssertionError("UNSET MAX EPOCHS")
         scheduler = torch.optim.lr_scheduler.SequentialLR(
             optim,
             [
@@ -395,6 +419,7 @@ class MIMModule(L.LightningModule):
         }
 
     def training_step(self, batch, _):
+        experiments.config.assertion = self.global_step < 10
         image = batch[image_key]  # (B,C,H,W,D)
         mask_size = elementwise_mul(image.shape[2:], self.mask_scale)
         if not all(is_integer(mask_size)):

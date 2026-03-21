@@ -1,3 +1,5 @@
+from pprint import pprint
+
 from experiments.utils import loaded_json, to_fraction
 from pathlib import Path
 
@@ -6,6 +8,7 @@ class Plan:
     def __init__(self, plan_path: Path):
         self.plan_path = plan_path
         self.plan = loaded_json(plan_path)
+        pprint(self.plan)
         self.splan = self.plan["foreground_intensity_properties_per_channel"]["0"]
         self.jplan = self.plan["configurations"]["3d_fullres"]
         self.patch_size = tuple(self.jplan["patch_size"][::-1])

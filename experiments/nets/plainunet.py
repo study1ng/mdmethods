@@ -151,7 +151,7 @@ class PlainEncoderStage(EncoderStage):
         pool_channel,
         output_channel,
         kernel_size: int | tuple[int, ...] = 3,
-        pool_scale: Fraction | tuple[Fraction, ...] = Fraction(1,2),
+        pool_scale: Fraction | tuple[Fraction, ...] = Fraction(1, 2),
         n_blocks: int = 3,
         *,
         dim: int,
@@ -289,6 +289,7 @@ class PlainHead(UNetHead):
     def calculate_output_size(self, input_size):
         return self.conv.calculate_output_size(input_size)
 
+
 class PlainEncoder(UNetEncoder):
     """Plain UNet Encoder"""
 
@@ -398,23 +399,28 @@ class PlainUNet(UNet):
         self.feature_channel_limitation = feature_channel_limitation
 
         if isinstance(skip_channels, tuple):
-            skip_channels = elementwise_min(skip_channels, self.feature_channel_limitation)
+            skip_channels = elementwise_min(
+                skip_channels, self.feature_channel_limitation
+            )
         else:
-            skip_channels = [elementwise_min(sc, self.feature_channel_limitation) for sc in skip_channels]
+            skip_channels = [
+                elementwise_min(sc, self.feature_channel_limitation)
+                for sc in skip_channels
+            ]
 
         if isinstance(self.kernel_size, int):
-            self.kernel_size = repeat(self.kernel_size, self.dim)
+            self.kernel_size = repeat(self.kernel_size, dim)
 
         if isinstance(self.kernel_size, tuple):
             self.kernel_size = repeat(
-                self.kernel_size, self.n_stages + 1, wrap_type=list
+                self.kernel_size, n_stages + 1, wrap_type=list
             )
         elif isinstance(self.kernel_size, list) and isinstance(
             self.kernel_size[0], int
         ):
             self.kernel_size = [repeat(ps, self.dim) for ps in self.kernel_size]
 
-        assert_eq(self.n_stages + 1, len(self.kernel_size))
+        assert_eq(n_stages + 1, len(self.kernel_size))
         self.kernel_size = tuple(self.kernel_size)
         super().__init__(
             n_stages,
@@ -456,10 +462,14 @@ class PlainUNet(UNet):
         **kwargs,
     ):
         args = UNet._plan_to_arguments(
-            plan, input_channel, skip_channel_ratio, deep_supervision, **kwargs
+            plan=plan,
+            input_channel=input_channel,
+            skip_channel_ratio=skip_channel_ratio,
+            deep_supervision=deep_supervision,
+            **kwargs,
         )
         args["output_channel"] = output_channel
         args["feature_channel_limitation"] = plan.max_feature_channel
-        args["kernel_size"] = plan.conv_kernel_size
+        args["kernel_size"] = [repeat(3, plan.dim)] + plan.conv_kernel_size
         args.update(kwargs)
         return args

@@ -40,3 +40,5 @@ envrc
 pdm-python
 
 data/
+
+mlruns/

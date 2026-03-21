@@ -106,7 +106,7 @@ def repeat(
     return wrap_type(v for _ in range(dim))
 
 
-def element_wise(types=object, wrap_type=tuple):
+def element_wise(types=(int, float, Fraction), wrap_type=tuple):
     """wrapper to make a function can be used for Iterable
 
     Parameters
@@ -147,7 +147,7 @@ def element_wise(types=object, wrap_type=tuple):
     return _element_wise
 
 
-def element_wise2(types=object, wrap_type=tuple):
+def element_wise2(types=(int, float, Fraction), wrap_type=tuple):
     """like element_wise, but get two argument. if both is not types, assert its length is same
 
     Parameters
@@ -371,7 +371,7 @@ def assert_divisible(
         lhs // rhs
     """
     div, m = divmod_accept_tuple(lhs, rhs)
-    assert all(m), f"not dividable, lhs: {lhs}, rhs: {rhs}"
+    assert all(repeat(m, 1, types=bool)), f"not dividable, lhs: {lhs}, rhs: {rhs}"
     return div
 
 
@@ -482,6 +482,6 @@ def reciprocal(i):
 
 
 size_dim = slice(
-    2,
+    2, None
 )
 channel_dim = 1
