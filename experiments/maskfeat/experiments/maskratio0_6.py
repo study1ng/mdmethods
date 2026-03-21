@@ -1,3 +1,4 @@
+from experiments.mim.model import ConvPosition
 from experiments.trainer import PlannedExperiment
 from experiments.nets.ubimamba import UBiMamba as UNet
 from experiments.prune import SpacingShapeStrictPruner as Pruner
@@ -32,7 +33,7 @@ class MaskFeat(PlannedExperiment):
         unet = UNet.from_plan(
             self.plan, input_channel=1, output_channel=1, deep_supervision=True
         )
-        lm = Model(unet, mask_ratio=0.6)
+        lm = Model(unet, mask_ratio=0.6, conv_position=ConvPosition.CONV_LAST)
         return lm
 
 

@@ -1,7 +1,6 @@
 from enum import Enum, auto
 from fractions import Fraction
 from logging import warning
-import math
 import lightning as L
 import torch, einops.layers.torch
 from torch import nn, tensor, Tensor
@@ -391,10 +390,7 @@ class MIMModule(L.LightningModule):
             betas=(0.9, 0.95),
         )
         total_steps = self.trainer.estimated_stepping_batches
-        if total_steps != inf:
-            warmup_steps = total_steps // 10
-        else:
-            raise AssertionError("UNSET MAX EPOCHS")
+        warmup_steps = min(total_steps, 1000) // 10
         scheduler = torch.optim.lr_scheduler.SequentialLR(
             optim,
             [
@@ -437,10 +433,17 @@ class MIMModule(L.LightningModule):
                 loss += self.head_weights[i] * self.loss(out[i], image)
         else:
             loss = self.loss(out, image)
-        l = loss * mask
-        l = l.sum() / (mask.sum() * image.shape[1] + 1e-5)
+        hl = loss * mask
+        hl = hl.sum() / (mask.sum() * image.shape[1] + 1e-5)
         vl = loss * (1 - mask)
         vl = vl.sum() / ((1 - mask).sum() * image.shape[1] + 1e-5)  # visible loss
-        l = vl * self.visible_loss_weight + l * (1 - self.visible_loss_weight)
-        self.log("training_loss", l, prog_bar=True, on_epoch=True)
-        return l
+        l = vl * self.visible_loss_weight + hl * (1 - self.visible_loss_weight)
+        self.log("training loss", l, prog_bar=True, on_step=True, on_epoch=True)
+        self.log("visible loss", vl, logger=True, on_epoch=True)
+        self.log("masked loss", hl, logger=True, on_epoch=True)
+        self.log("lr", self.optimizers().param_groups[0]['lr'], prog_bar=True)
+        return {
+            "loss": l,
+            "out": (out[0] if self.deep_supervision else out).detach().cpu(),
+            "masked": masked.detach().cpu(),
+        }

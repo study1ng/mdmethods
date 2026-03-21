@@ -1,26 +1,36 @@
+from fractions import Fraction
 from functools import partial
 
 import einops.layers
 import einops.layers.torch
 from torch import Tensor, nn, tensor
 import torch
-from experiments.nets.generic_modules import ConvBlock
+from experiments.nets.plainunet import PlainUNet
 from experiments.utils import (
     assert_divisible,
+    assert_to_integer,
+    elementwise_mul,
     get_gaussian_kernel,
     assert_eq,
+    reciprocal,
     repeat,
     element_wise2,
+    to_fraction,
+    to_fraction_with_denominator,
 )
 import math
 import einops
 import torch.nn.functional as F
-from experiments.mim.model import MaskGenerator
+from experiments.mim.model import (
+    ConvPosition,
+    MaskGenerator,
+    PixelShuffleHead,
+    RevertResolutionHead,
+)
 from math import prod
 from experiments.config import image_key
 import lightning as L
 import torch
-from experiments.nets.base import UNet, UNetHead
 import sympy
 
 
@@ -50,10 +60,10 @@ class HogLayer3D(nn.Module):
         signed: bool = True,
     ):
         super().__init__()
-        self.cell_size = repeat(cell_size, 3, int)
-        self.block_size = repeat(block_size, 3, int)
-        self.spacing = repeat(spacing, 3, (int, float))
-        self.gaussian_window_size = repeat(gaussian_window_size, 3, int)
+        self.cell_size = repeat(cell_size, 3, types=int)
+        self.block_size = repeat(block_size, 3, types=int)
+        self.spacing = repeat(spacing, 3, types=(int, float))
+        self.gaussian_window_size = repeat(gaussian_window_size, 3, types=int)
         self.signed = signed
         if self.signed:
             self.bin_count = 20
@@ -227,178 +237,84 @@ class HogLayer3D(nn.Module):
         )  # (112,112,128)->(15,15,18,160), 1605632->648000
 
 
-class HogHead(UNetHead):
-    """A head which predict HOG"""
-
+class HogHead(RevertResolutionHead):
     def __init__(
-        self, input_size, input_channel, output_size, output_channel, hog_channel: int
+        self, input_channel, output_channel, pool_scale, hog_channel: int, *, dim, conv_position: ConvPosition = ConvPosition.default()
     ):
-        super().__init__(
-            input_size, input_channel, output_size + (hog_channel,), output_channel
-        )
+        super().__init__(input_channel, output_channel, pool_scale, dim=dim)
         self.hog_channel = hog_channel
-
-        @element_wise2(int)
-        def _ge(a, b):
-            return a > b
-
-        self.shrink = all(_ge(input_size, output_size))
-        self.scales = (
-            assert_divisible(input_size, output_size)
-            if self.shrink
-            else assert_divisible(output_size, input_size)
+        self.conv_position = conv_position
+        self.module = nn.Sequential(
+            PixelShuffleHead(
+                self.input_channel, self.output_channel * self.hog_channel, pool_scale=self.pool_scale, dim=self.dim, conv_position=self.conv_position
+            ),
+            einops.layers.torch.Rearrange(
+                "b (c p) h w d -> b c h w d p", p=self.hog_channel
+            ),
         )
-        self.ps = (
-            nn.Sequential(
-                einops.layers.torch.Rearrange(
-                    "b c (h p0) (w p1) (d p2) -> b (c p0 p1 p2) h w d",
-                    p0=self.scales[0],
-                    p1=self.scales[1],
-                    p2=self.scales[2],
-                ),
-                ConvBlock(
-                    input_channel=input_channel * prod(self.scales),
-                    output_channel=output_channel * hog_channel,
-                    size=output_size,
-                    kernel_size=1,
-                ),
-                einops.layers.torch.Rearrange(
-                    "b (c p) h w d -> b c h w d p", p=self.hog_channel
-                ),
-            )
-            if self.shrink
-            else nn.Sequential(
-                ConvBlock(
-                    input_channel=input_channel,
-                    output_channel=output_channel * prod(self.scales) * hog_channel,
-                    size=input_size,
-                    kernel_size=1,
-                ),
-                einops.layers.torch.Rearrange(
-                    "b (c p0 p1 p2 p) h w d -> b c (h p0) (w p1) (d p2) p",
-                    p=hog_channel,
-                    p0=self.scales[0],
-                    p1=self.scales[1],
-                    p2=self.scales[2],
-                ),
-            )
+
+    @classmethod
+    def attach_to_unet(cls, unet, hog_channel: int, output_scale, *args, **kwargs):
+        return super().attach_to_unet(
+            unet=unet,
+            output_scale=output_scale,
+            *args,
+            **kwargs,
+            hog_channel=hog_channel,
         )
 
     def _forward(self, x):
-        return self.ps(x)
+        return self.module(x)
 
-    @classmethod
-    def attach_to_unet(cls, unet: UNet, hog: HogLayer3D) -> UNet:
-        """automatically change the unet head to HogHead"""
-        assert hog.block_size == (
-            1,
-            1,
-            1,
-        ), "We don't support for hog block normalization cuz that will make output hog resolution not divisors of input image resolution"
-        unet_output_shape = (1, unet.output_channel, *unet.patch_size)
-        output_shape = hog.output_size(unet_output_shape)
-        output_channel = (
-            unet.patch_channel
-        )  # HOG channel would be as same as input channel
-        output_size = output_shape[2:5]
-        hog_channel = output_shape[5]
-
-        if unet.deep_supervision:
-            head = nn.ModuleList(
-                tuple(
-                    cls(
-                        input_size=skip_size,
-                        input_channel=skip_channel,
-                        output_size=output_size,
-                        output_channel=output_channel,
-                        hog_channel=hog_channel,
-                    )
-                    for skip_size, skip_channel in zip(
-                        unet.skip_size, unet.skip_channels, strict=True
-                    )
-                )
-            )
-        else:
-            head = cls(
-                input_size=unet.skip_size[0],
-                input_channel=unet.skip_channels[0],
-                output_size=output_size,
-                output_channel=output_channel,
-                hog_channel=hog_channel,
-            )
-        unet.decoder.head = head
-        return unet
+    def calculate_output_size(self, input_size):    
+        b, c, h, w, d = elementwise_mul(input_size, self.pool_scale)
+        return (b, assert_divisible(c, self.hog_channel), h, w, d, self.hog_channel)
 
 
 class MaskFeatModule(L.LightningModule):
-    """UNet Pretraining by predict HOG, inspired by MaskFeat <https://arxiv.org/abs/2112.09133>
-
-    Parameters
-    ----------
-    unet : UNet
-        Instance of UNet
-    mask_ratio : float
-        Ratio of mask
-    mask_fn : function which argument is (image, mask_size, mask_ratio, device=None), and return a binary mask which shape is same as image
-        Function which generate mask
-    mask_size : tuple[int, int, int] | None
-        Mask size.
-    weights : float | tuple[float, ...] | None = None
-        Weights used if deep supervision.
-        If weights is float, the k nd stage's weight would be weights ** k.
-        The weights would be normalized.
-        Length of weights should be as same as unet.n_stages + 1
-    loss_fn : function which argument is (image, target), and return a unreducted feature map
-        Loss function
-    cell_size : tuple[int, int, int] | int | None = None
-        HOG cell size. if not assigned, it would be a mask size divisor which is nearest from unet bottleneck feature map size
-    gaussian_window_size : tuple[int, int, int] | int | None = None
-        HOG gaussian window size. If None then gaussian window would not be adopted
-    signed: bool = True
-        If use signed HOG or unsigned HOG
-    visible_loss_weight: float = 0.0
-        The loss weight for area which is not masked.
-
-    Notes
-    -----
-    HOG block size is fixed to 1, meaning we will not use block normalization.
-    This is intended not to break the spatial relationship between mask patch and cell.
-    """
-
     def __init__(
         self,
-        unet: UNet,
-        mask_ratio: float,
+        unet: PlainUNet,
+        mask_ratio,
         mask_gen=MaskGenerator,
-        mask_size: tuple[int, ...] | None = None,
-        weights: float | tuple[float, ...] | None = None,
+        mask_scale=None,
+        weights=None,
         loss_fn=partial(nn.MSELoss, reduction="none"),
+        visible_loss_weight=0.0,
+        *,
+        conv_position=ConvPosition.default(),
         cell_size: tuple[int, ...] | int | None = None,
         gaussian_window_size: tuple[int, int, int] | int | None = None,
         signed: bool = True,
-        visible_loss_weight: float = 0.0,
     ):
-        super().__init__()
-        self.save_hyperparameters(ignore=["unet"])
-        self.unet = unet
-        self.deep_supervision = unet.deep_supervision
-        self.mask_ratio = mask_ratio
-        self.mask_size = mask_size
-        self.weights = weights
-        self.visible_loss_weight = visible_loss_weight
+        self.cell_size = cell_size
         self.gaussian_window_size = gaussian_window_size
         self.signed = signed
+        super().__init__()
+        self.save_hyperparameters(ignore=["unet"])
+        self.conv_position = conv_position
+        self.deep_supervision = unet.deep_supervision
+        self.mask_ratio = mask_ratio
+        self.mask_scale = mask_scale
+        self.weights = weights
+        self.visible_loss_weight = visible_loss_weight
         self.loss = loss_fn()
-
-        if mask_size is None:
-            self.mask_size = assert_divisible(
-                self.unet.patch_size, self.unet.skip_size[-1]  # (16,16,16)
+        self.unet = unet
+        if mask_scale is None:
+            mask_scale = repeat(
+                Fraction(
+                    1,
+                ),
+                dim=self.unet.dim,
             )
-            print("default mask size: ", self.mask_size)
-
+            for scale in self.unet.encoder_pool_scales:
+                mask_scale = elementwise_mul(mask_scale, scale)
+            self.mask_scale = mask_scale
+            print("default mask scale: ", self.mask_scale)
+        mask_size = assert_to_integer(reciprocal(self.mask_scale))
         if cell_size is None:
-            self.cell_size = self.unet.skip_size[-1]  # (7,7,8)
 
+            # セルサイズはmask_sizeの約数でありかつ, できるだけ(8,8,8)に近い値を探索する.
             @element_wise2(int)
             def _find_closest_divisor(i, j):
                 """iの約数のうち, 最もjと値が近いものを返す"""
@@ -407,10 +323,10 @@ class MaskFeatModule(L.LightningModule):
                 return closest
 
             # mask_sizeの約数となるように調整
-            self.cell_size = _find_closest_divisor(self.mask_size, self.cell_size)
+            self.cell_size = _find_closest_divisor(mask_size, 8)
             print("default cell size: ", self.cell_size)
 
-        self.cell_per_mask = assert_divisible(self.mask_size, self.cell_size)
+        self.cell_per_mask = assert_divisible(mask_size, self.cell_size)
 
         self.hog = HogLayer3D(
             cell_size=self.cell_size,
@@ -418,29 +334,35 @@ class MaskFeatModule(L.LightningModule):
             gaussian_window_size=self.gaussian_window_size,
             signed=self.signed,
         )
-        self.unet = HogHead.attach_to_unet(unet, self.hog)
+        self.unet = HogHead.attach_to_unet(
+            unet,
+            hog_channel=self.hog.bin_count,
+            output_scale= repeat(
+                to_fraction_with_denominator(1, self.cell_size), dim=self.unet.dim, types=Fraction
+            ),
+            conv_position=conv_position
+        )
         print(self.unet)
 
+        self.mask_fn = mask_gen(self.mask_scale, self.mask_ratio, dim=self.unet.dim)
         if self.deep_supervision:
             if isinstance(self.weights, tuple):
                 assert_eq(len(self.unet.decoder.head), len(self.weights))
             if self.weights is None:
-                self.weights = 2.0
+                self.weights = 0.5
             if isinstance(self.weights, float):
                 self.weights = tuple(
-                    self.weights**i for i in range(len(self.unet.decoder.head))
+                    self.weights**i for i in range(self.unet.n_stages + 1)
                 )
-            self.weights = tensor(self.weights)
+            self.weights = tensor(self.weights, dtype=torch.float32)
             self.weights /= self.weights.sum()
             self.register_buffer("head_weights", self.weights)
-
-        self.mask_fn = mask_gen(self.mask_size, self.mask_ratio)
 
     def forward(self, x: Tensor):
         return self.unet(x)
 
     def configure_optimizers(self):
-        self.optim = torch.optim.AdamW(
+        optim = torch.optim.AdamW(
             self.unet.parameters(),
             lr=4e-4,
             eps=1e-5,
@@ -448,26 +370,26 @@ class MaskFeatModule(L.LightningModule):
             betas=(0.9, 0.95),
         )
         total_steps = self.trainer.estimated_stepping_batches
-        warmup_steps = total_steps // 10
-        self.scheduler = torch.optim.lr_scheduler.SequentialLR(
-            self.optim,
+        warmup_steps = min(total_steps, 1000) // 10
+        scheduler = torch.optim.lr_scheduler.SequentialLR(
+            optim,
             [
                 torch.optim.lr_scheduler.LinearLR(
-                    self.optim,
+                    optim,
                     start_factor=1e-10,
                     end_factor=1.0,
                     total_iters=warmup_steps,
                 ),
                 torch.optim.lr_scheduler.CosineAnnealingLR(
-                    self.optim, T_max=total_steps - warmup_steps, eta_min=1e-5
+                    optim, T_max=total_steps - warmup_steps, eta_min=1e-5
                 ),
             ],
             milestones=[warmup_steps],
         )
         return {
-            "optimizer": self.optim,
+            "optimizer": optim,
             "lr_scheduler": {
-                "scheduler": self.scheduler,
+                "scheduler": scheduler,
                 "interval": "step",
             },
         }
@@ -476,7 +398,6 @@ class MaskFeatModule(L.LightningModule):
         image = batch[image_key]
         hog = self.hog(image)  # (B,C,H',W',D',bins)
         mask = self.mask_fn(image)  # (B,1,H,W,D)
-        # masked = image * (1 - mask) + self.mask_token * mask
         masked = image * (1 - mask)
         out = self.unet(masked)  # (B,C,H',W',D',bins)
         cell_mask = F.interpolate(mask, size=hog.shape[2:5], mode="nearest").unsqueeze(
@@ -489,14 +410,21 @@ class MaskFeatModule(L.LightningModule):
                 loss += self.head_weights[i] * self.loss(out[i], hog)
         else:
             loss = self.loss(out, hog)
-        l = loss * cell_mask
-        l = l.sum() / (
+        hl = loss * cell_mask
+        hl = hl.sum() / (
             cell_mask.sum() * hog.shape[1] * hog.shape[-1] + 1e-5
         )  # masked_loss
         vl = loss * (1 - cell_mask)
         vl = vl.sum() / (
             (1 - cell_mask).sum() * hog.shape[1] * hog.shape[-1] + 1e-5
         )  # visible loss
-        l = vl * self.visible_loss_weight + l * (1 - self.visible_loss_weight)
-        self.log("training_loss", l, prog_bar=True, on_epoch=True)
-        return l
+        l = vl * self.visible_loss_weight + hl * (1 - self.visible_loss_weight)
+        self.log("training loss", l, prog_bar=True, on_step=True, on_epoch=True)
+        self.log("visible loss", vl, logger=True, on_epoch=True)
+        self.log("masked loss", hl, logger=True, on_epoch=True)
+        self.log("lr", self.optimizers().param_groups[0]["lr"], prog_bar=True)
+        return {
+            "loss": l,
+            "out": (out[0] if self.deep_supervision else out).detach().cpu(),
+            "masked": masked.detach().cpu(),
+        }

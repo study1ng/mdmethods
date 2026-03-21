@@ -1,3 +1,4 @@
+from collections.abc import Iterable
 from fractions import Fraction
 from pathlib import Path
 import json
@@ -466,6 +467,9 @@ def assert_integer_scale(shape: int, scale: Fraction):
 def to_fraction(f):
     return Fraction(f)
 
+@element_wise2()
+def to_fraction_with_denominator(n, d):
+    return Fraction(n, d)
 
 def scale_shape_fn(scale) -> Callable[[int | tuple[int, ...]], int | tuple[int, ...]]:
 
