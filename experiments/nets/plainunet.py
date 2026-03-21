@@ -404,6 +404,7 @@ class PlainUNet(UNet):
 
         if isinstance(self.kernel_size, int):
             self.kernel_size = repeat(self.kernel_size, self.dim)
+
         if isinstance(self.kernel_size, tuple):
             self.kernel_size = repeat(
                 self.kernel_size, self.n_stages + 1, wrap_type=list

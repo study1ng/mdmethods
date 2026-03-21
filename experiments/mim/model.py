@@ -282,14 +282,14 @@ class PixelShuffleHead(RevertResolutionHead):
         self,
         input_channel,
         output_channel,
-        scale: Fraction | tuple[Fraction, ...],
+        pool_scale: Fraction | tuple[Fraction, ...],
         *,
         dim: int,
         conv_position: float = 1.0,
     ):
         self.output_channel = output_channel
         self.conv_position = conv_position
-        super().__init__(input_channel, output_channel, pool_scale=scale, dim=dim)
+        super().__init__(input_channel, output_channel, pool_scale=pool_scale, dim=dim)
         self.module = PixelShufflePool(
             input_channel=self.input_channel,
             output_channel=self.output_channel,

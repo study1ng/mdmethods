@@ -503,6 +503,7 @@ class UNet(BaseUNetModule):
             self.decoder_pool_scales = repeat(
                 to_fraction(self.decoder_pool_scales), self.dim
             )
+
         if isinstance(self.decoder_pool_scales, tuple):
             self.decoder_pool_scales = repeat(
                 to_fraction(self.decoder_pool_scales), self.n_stages, wrap_type=list
