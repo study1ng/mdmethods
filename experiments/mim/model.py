@@ -14,6 +14,7 @@ from experiments.nets.plainunet import PlainUNet
 from experiments.utils import (
     assert_divisible,
     assert_eq,
+    assert_integer_scale,
     assert_to_integer,
     denominator,
     elementwise_mul,
@@ -137,7 +138,7 @@ class PixelShufflePool(Pool):
             self.input_channel * prod(reciprocal(shrink_scale))
         )
         after_conv_channel = assert_to_integer(
-            self.output_channel * prod(reciprocal(expand_scale))
+            self.output_channel * prod(expand_scale)
         )
         return nn.Sequential(
             RearrangePool(input_channel=self.input_channel, pool_scale=shrink_scale),
@@ -159,7 +160,7 @@ class PixelShufflePool(Pool):
             self.input_channel * prod(reciprocal(expand_scale))
         )
         after_conv_channel = assert_to_integer(
-            self.output_channel * prod(reciprocal(shrink_scale))
+            self.output_channel * prod(shrink_scale)
         )
         return nn.Sequential(
             RearrangePool(input_channel=self.input_channel, pool_scale=expand_scale),
@@ -194,7 +195,8 @@ class MaskGenerator(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         b, c, *s = x.shape
         assert len(s) == self.dim
-        msh = (b, 1, assert_to_integer(reciprocal(self.mask_scale)))
+        mask_size = assert_integer_scale(s, self.mask_scale)
+        msh = (b, 1, *mask_size)
         mask = torch.rand(msh, device=x.device) < self.mask_ratio
         mask = F.interpolate(mask.float(), s, mode="nearest")
         return mask
@@ -261,6 +263,7 @@ class RevertResolutionHead(UNetHead):
                     input_channel=input_channel,
                     output_channel=unet.output_channel,
                     pool_scale=scale,
+                    dim=unet.dim
                     **kwargs,
                 )
                 for input_channel, scale in zip(
@@ -285,9 +288,8 @@ class PixelShuffleHead(RevertResolutionHead):
         conv_position: float = 1.0,
     ):
         self.output_channel = output_channel
-        self.dim = dim
         self.conv_position = conv_position
-        super().__init__(input_channel, output_channel, pool_scale=scale)
+        super().__init__(input_channel, output_channel, pool_scale=scale, dim=dim)
         self.module = PixelShufflePool(
             input_channel=self.input_channel,
             output_channel=self.output_channel,
@@ -339,7 +341,7 @@ class MIMModule(L.LightningModule):
                 mask_scale = elementwise_mul(mask_scale, scale)
             self.mask_scale = mask_scale
             print("default mask scale: ", self.mask_scale)
-        self.mask_fn = mask_gen(self.mask_scale, self.mask_ratio)
+        self.mask_fn = mask_gen(self.mask_scale, self.mask_ratio, dim=self.unet.dim)
         if self.deep_supervision:
             if isinstance(self.weights, tuple):
                 assert_eq(len(self.unet.decoder.head), len(self.weights))

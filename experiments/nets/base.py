@@ -123,8 +123,8 @@ class BaseUNetModule(nn.Module, ABC):
         super().__init__()
         self.assertions = DumbAssertion()
 
-    def bound_assertion(self, assertions: Assertions):
-        self.assertions = Assertions(self.assertions, assertions)
+    def bound_assertion(self, *assertions: Assertions):
+        self.assertions = Assertions(self.assertions, *assertions)
 
     def forward(self, *args, **kwargs):
         y = self._forward(*args, **kwargs)

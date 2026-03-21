@@ -151,7 +151,7 @@ class StridedConv(Pool):
         assert dim is not None or isinstance(kernel_size, tuple), "dim is ambiguous"
         self.dim = dim if dim is not None else len(kernel_size)
         self.kernel_size = kernel_size
-        super().__init__(input_channel, output_channel, self.pool_scale)
+        super().__init__(input_channel, output_channel, pool_scale)
 
         try:
             self.pool_stride = assert_to_integer(reciprocal(pool_scale))
