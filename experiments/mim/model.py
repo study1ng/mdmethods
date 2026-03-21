@@ -6,7 +6,7 @@ import torch, einops.layers.torch
 from torch import nn, tensor, Tensor
 import torch.nn.functional as F
 from functools import partial
-from experiments.nets.base import Pool, UNet, UNetHead
+from experiments.nets.base import Pool, UNetHead
 from experiments.config import image_key
 from experiments.nets.generic_modules import ConvBlock
 from math import prod
@@ -16,15 +16,10 @@ from experiments.utils import (
     assert_eq,
     assert_to_integer,
     denominator,
-    elementwise_div,
-    elementwise_gt,
-    elementwise_le,
     elementwise_mul,
     is_integer,
     numerator,
     reciprocal,
-    assert_integer_scale,
-    size_of_tensor,
     to_fraction,
     repeat,
 )
@@ -145,7 +140,7 @@ class PixelShufflePool(Pool):
             self.output_channel * prod(reciprocal(expand_scale))
         )
         return nn.Sequential(
-            RearrangePool(input_channel=self.input_channel, pool=shrink_scale),
+            RearrangePool(input_channel=self.input_channel, pool_scale=shrink_scale),
             ConvBlock(
                 input_channel=before_conv_channel,
                 output_channel=after_conv_channel,
@@ -167,7 +162,7 @@ class PixelShufflePool(Pool):
             self.output_channel * prod(reciprocal(shrink_scale))
         )
         return nn.Sequential(
-            RearrangePool(input_channel=self.input_channel, pool=expand_scale),
+            RearrangePool(input_channel=self.input_channel, pool_scale=expand_scale),
             ConvBlock(
                 input_channel=before_conv_channel,
                 output_channel=after_conv_channel,
@@ -247,7 +242,7 @@ class RevertResolutionHead(UNetHead):
                 *args,
                 input_channel=unet.skip_channels[0],
                 output_channel=unet.output_channel,
-                pool_scalescale=output_scale,
+                pool_scale=output_scale,
                 dim=unet.dim,
                 **kwargs,
             )
@@ -314,7 +309,7 @@ class MIMModule(L.LightningModule):
         mask_ratio: float,
         mask_gen=MaskGenerator,
         head=PixelShuffleHead,
-        mask_scale: tuple[int, ...] | None = None,
+        mask_scale: Fraction | tuple[Fraction, ...] | None = None,
         weights: float | tuple[float, ...] | None = None,
         loss_fn=partial(nn.L1Loss, reduction="none"),
         visible_loss_weight: float = 0.0,

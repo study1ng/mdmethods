@@ -5,7 +5,6 @@ from torch import Tensor, nn
 from experiments.plan import Plan
 from experiments.utils import (
     assert_eq,
-    assert_divisible,
     elementwise_mul,
     identity,
     reciprocal,
@@ -71,19 +70,20 @@ Try to set both input_shape and output_shape."""
         self.dim = dim
 
     def _assert(self, x: Tensor, y: Tensor):
-        shape = x.shape[self.dim]
+        xshape = x.shape[self.dim]
+        yshape = y.shape[self.dim]
         if self.input_shape is not None:
             if callable(self.input_shape):
-                self.input_shape(shape)
+                self.input_shape(xshape)
             else:
-                assert_eq(self.input_shape, shape)
+                assert_eq(self.input_shape, xshape)
         if self.output_shape is not None:
             if callable(self.output_shape):
-                self.input_shape(shape)
+                self.output_shape(yshape)
             else:
-                assert_eq(self.output_shape, y.shape[self.dim])
+                assert_eq(self.output_shape, yshape)
         if self.shape_fn is not None:
-            assert_eq(self.shape_fn(shape), y.shape[self.dim])
+            assert_eq(self.shape_fn(xshape), yshape)
 
     def __call__(self, *args: Tensor, **_):
         assert len(args) >= 2, f"Assert Shape got {len(args)} arguments"
