@@ -263,7 +263,7 @@ class RevertResolutionHead(UNetHead):
                     input_channel=input_channel,
                     output_channel=unet.output_channel,
                     pool_scale=scale,
-                    dim=unet.dim
+                    dim=unet.dim,
                     **kwargs,
                 )
                 for input_channel, scale in zip(

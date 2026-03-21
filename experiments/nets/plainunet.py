@@ -395,9 +395,9 @@ class PlainUNet(UNet):
         self.feature_channel_limitation = feature_channel_limitation
 
         if isinstance(skip_channels, (int, tuple)):
-            skip_channels = elementwise_min(skip_channels)
+            skip_channels = elementwise_min(skip_channels, self.feature_channel_limitation)
         else:
-            skip_channels = [elementwise_min(sc) for sc in skip_channels]
+            skip_channels = [elementwise_min(sc, self.feature_channel_limitation) for sc in skip_channels]
 
         if isinstance(self.kernel_size, int):
             self.kernel_size = repeat(self.kernel_size, self.dim)
