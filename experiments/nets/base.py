@@ -70,20 +70,18 @@ Try to set both input_shape and output_shape."""
         self.dim = dim
 
     def _assert(self, x: Tensor, y: Tensor):
-        xshape = x.shape[self.dim]
-        yshape = y.shape[self.dim]
         if self.input_shape is not None:
             if callable(self.input_shape):
-                self.input_shape(xshape)
+                self.input_shape(x.shape[self.dim])
             else:
-                assert_eq(self.input_shape, xshape)
+                assert_eq(self.input_shape, x.shape[self.dim])
         if self.output_shape is not None:
             if callable(self.output_shape):
-                self.output_shape(yshape)
+                self.output_shape(y.shape[self.dim])
             else:
-                assert_eq(self.output_shape, yshape)
+                assert_eq(self.output_shape, y.shape[self.dim])
         if self.shape_fn is not None:
-            assert_eq(self.shape_fn(xshape), yshape)
+            assert_eq(self.shape_fn(x.shape[self.dim]), y.shape[self.dim])
 
     def __call__(self, *args: Tensor, **_):
         assert len(args) >= 2, f"Assert Shape got {len(args)} arguments"

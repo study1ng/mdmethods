@@ -1,4 +1,4 @@
-from experiments.utils import loaded_json
+from experiments.utils import loaded_json, to_fraction
 from pathlib import Path
 
 
@@ -18,8 +18,12 @@ class Plan:
         self.median = self.splan["median"]
         self.percentile_00_5 = self.splan["percentile_00_5"]
         self.percentile_99_5 = self.splan["percentile_99_5"]
-        self.pool_strides = list(tuple(ps) for ps in self.jplan["pool_op_kernel_sizes"])
-        self.conv_kernel_size = list(tuple(ks) for ks in self.jplan["conv_kernel_sizes"])
+        self.pool_strides = list(
+            to_fraction(tuple(ps)) for ps in self.jplan["pool_op_kernel_sizes"]
+        )
+        self.conv_kernel_size = list(
+            tuple(ks) for ks in self.jplan["conv_kernel_sizes"]
+        )
         self.stem_channel = self.jplan["UNet_base_num_features"]
         self.max_feature_channel = self.jplan["unet_max_num_features"]
         self.n_stages = len(self.pool_strides)

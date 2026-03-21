@@ -300,6 +300,9 @@ class PixelShuffleHead(RevertResolutionHead):
 
     def calculate_output_size(self, input_size):
         return self.module.calculate_output_size(input_size)
+    
+    def _forward(self, x):
+        return self.module(x)
 
 
 class MIMModule(L.LightningModule):

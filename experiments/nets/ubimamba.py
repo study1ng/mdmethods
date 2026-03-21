@@ -129,7 +129,7 @@ class MEncoder(PlainEncoder):
             n_stages=n_stages,
             input_channel=input_channel,
             skip_channels=skip_channels,
-            pool_scale=pool_scales,
+            pool_scales=pool_scales,
             kernel_size=kernel_size,
             dim=dim,
         )

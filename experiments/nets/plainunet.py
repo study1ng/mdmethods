@@ -284,7 +284,10 @@ class PlainHead(UNetHead):
             unet.decoder.head = PlainHead(
                 unet.skip_channels[0], unet.output_channel, dim=unet.dim
             )
+        return unet
 
+    def calculate_output_size(self, input_size):
+        return self.conv.calculate_output_size(input_size)
 
 class PlainEncoder(UNetEncoder):
     """Plain UNet Encoder"""
@@ -294,14 +297,14 @@ class PlainEncoder(UNetEncoder):
         n_stages,
         input_channel,
         skip_channels,
-        pool_scale,
+        pool_scales,
         kernel_size: tuple[tuple[int, ...], ...],
         *,
         dim: int,
     ):
         self.kernel_size = kernel_size
         self.dim = dim
-        super().__init__(n_stages, input_channel, skip_channels, pool_scale)
+        super().__init__(n_stages, input_channel, skip_channels, pool_scales)
 
     def _build_stem(self):
         return PlainStem(
@@ -337,7 +340,7 @@ class PlainDecoder(UNetDecoder):
         n_stages,
         skip_channels,
         output_channel,
-        pool_scale,
+        pool_scales,
         kernel_size: tuple[tuple[int, ...], ...],
         *,
         deep_supervision=False,
@@ -347,7 +350,7 @@ class PlainDecoder(UNetDecoder):
         self.dim = dim
         self.output_channel = output_channel
         super().__init__(
-            n_stages, skip_channels, pool_scale, deep_supervision=deep_supervision
+            n_stages, skip_channels, pool_scales, deep_supervision=deep_supervision
         )
 
     def _build_head(self):
@@ -381,9 +384,9 @@ class PlainUNet(UNet):
         self,
         n_stages,
         input_channel,
-        skip_channels,
+        skip_channels: tuple[int, ...] | list[tuple[int, ...]],
         output_channel: int,
-        pool_scale=Fraction(2),
+        decoder_pool_scales=Fraction(2),
         kernel_size: int | tuple[int, ...] | list[int] | list[tuple[int, ...]] = 3,
         *,
         deep_supervision=False,
@@ -394,7 +397,7 @@ class PlainUNet(UNet):
         self.kernel_size = kernel_size
         self.feature_channel_limitation = feature_channel_limitation
 
-        if isinstance(skip_channels, (int, tuple)):
+        if isinstance(skip_channels, tuple):
             skip_channels = elementwise_min(skip_channels, self.feature_channel_limitation)
         else:
             skip_channels = [elementwise_min(sc, self.feature_channel_limitation) for sc in skip_channels]
@@ -416,7 +419,7 @@ class PlainUNet(UNet):
             n_stages,
             input_channel,
             skip_channels,
-            pool_scale,
+            decoder_pool_scales,
             deep_supervision=deep_supervision,
             dim=dim,
         )
@@ -426,7 +429,7 @@ class PlainUNet(UNet):
             n_stages=self.n_stages,
             skip_channels=self.skip_channels,
             output_channel=self.output_channel,
-            pool_scale=self.decoder_pool_scales,
+            pool_scales=self.decoder_pool_scales,
             kernel_size=self.kernel_size,
             deep_supervision=self.deep_supervision,
             dim=self.dim,
@@ -437,7 +440,7 @@ class PlainUNet(UNet):
             n_stages=self.n_stages,
             input_channel=self.input_channel,
             skip_channels=self.skip_channels,
-            pool_scale=self.encoder_pool_scales,
+            pool_scales=self.encoder_pool_scales,
             kernel_size=self.kernel_size,
             dim=self.dim,
         )
