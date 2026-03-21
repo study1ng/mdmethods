@@ -1,12 +1,11 @@
 from pathlib import Path
 import json
 from datetime import datetime
-from functools import partial, wraps
+from functools import wraps
 from shutil import rmtree
 import uuid
 import threading
-from typing import Callable, Tuple, Union
-import warnings
+from typing import Tuple, Union
 from torch import Tensor
 import torch
 
@@ -74,7 +73,9 @@ def nowstring() -> str:
     return datetime.now().strftime("%Y.%m.%d.%H.%M.%S")
 
 
-def prolong(v, dim: int, types, wrap_type=tuple):
+def repeat(
+    v, dim: int, *, types: type | tuple[type, ...] | None = None, wrap_type=tuple
+):
     """if v is types, then repeat it for dim times
 
     Parameters
@@ -83,8 +84,8 @@ def prolong(v, dim: int, types, wrap_type=tuple):
         any value to be repeated
     dim : int
         repeat times
-    types : type | tuple[type, ...]
-        target types
+    types : type | tuple[type, ...] | None
+        target types if None then always wrap
     wrap_type : Function which get a Iterable, optional
         the wrapper, by default tuple
 
@@ -97,12 +98,14 @@ def prolong(v, dim: int, types, wrap_type=tuple):
     -----
     This function don't assert len(returns) == dim, if v is not instance of types
     """
+    if types is None:
+        types = type(v)
     if not isinstance(v, types):
         return v
     return wrap_type(v for _ in range(dim))
 
 
-def element_wise(types, wrap_type=tuple):
+def element_wise(types = object, wrap_type=tuple):
     """wrapper to make a function can be used for Iterable
 
     Parameters
@@ -143,7 +146,7 @@ def element_wise(types, wrap_type=tuple):
     return _element_wise
 
 
-def element_wise2(types, wrap_type=tuple):
+def element_wise2(types = object, wrap_type=tuple):
     """like element_wise, but get two argument. if both is not types, assert its length is same
 
     Parameters
@@ -289,22 +292,37 @@ def size_of_tensor(x: Tensor) -> Tuple[int, ...]:
     """
     return x.shape[2:]
 
+@element_wise2()
+def elementwise_div(l, r):
+    return l / r
 
-@element_wise2(int)
-def _modulo(l, r):
+@element_wise2()
+def elementwise_is_divisor(l, r):
     return l % r == 0
 
 
-@element_wise2(int)
-def _div(l, r):
+@element_wise2()
+def elementwise_intdiv(l, r):
     return l // r
 
 
-@element_wise2((int, float))
-def _mul(l, r):
+@element_wise2()
+def elementwise_mul(l, r):
     return l * r
 
+@element_wise2()
+def elementwise_gt(l, r):
+    return l > r
+@element_wise2()
+def elementwise_le(l, r):
+    return l <= r
 
+@element_wise2()
+def elementwise_min(l, r):
+    return min(l, r)
+@element_wise2()
+def elementwise_max(l, r):
+    return max(l, r)
 def divmod_accept_tuple(
     lhs: int | Tuple[int, ...], rhs: int | Tuple[int, ...]
 ) -> Tuple[Union[int, Tuple[int, ...]], Union[int, Tuple[int, ...]]]:
@@ -321,10 +339,10 @@ def divmod_accept_tuple(
     Tuple[Union[int, Tuple[int, ...]], Union[int, Tuple[int, ...]]]
         (div, mod)
     """
-    return (_div(lhs, rhs), _modulo(lhs, rhs))
+    return (elementwise_intdiv(lhs, rhs), elementwise_is_divisor(lhs, rhs))
 
 
-def assert_divisable(
+def assert_divisible(
     lhs: int | Tuple[int, ...], rhs: int | Tuple[int, ...]
 ) -> Union[int, Tuple[int, ...]]:
     """assert rhs is all divisors of lhs, and return lhs // rhs
@@ -400,37 +418,6 @@ def get_gaussian_kernel(
     return _get_gaussian_kernel(gaussian_window_size, std)
 
 
-def assert_shape_change(
-    input_shape: int | tuple[int, ...] | None = None,
-    output_shape: int | tuple[int, ...] | None = None,
-    shape_fn: Callable[[int | tuple[int, ...]], int | tuple[int, ...]] | None = None,
-    dim: int | slice = slice(),
-):
-    if not (input_shape is None and output_shape is None) and shape_fn is not None:
-        warnings.warn(
-            """Either input_shape or output_shape is provided alongside shape_fn.
-            shape_fn is intended to be used when you know neither input_shape nor output_shape.
-            Try to set both input_shape and output_shape."""
-        )
-
-    def _assert_shape_change_dec(func):
-        @wraps(func)
-        def wrapper(self, x, *args, **kwargs):
-            shape = x.shape[dim]
-            if input_shape is not None:
-                assert_eq(input_shape, shape)
-            y = func(self, x, *args, **kwargs)
-            if output_shape is not None:
-                assert_eq(output_shape, y.shape[dim])
-            if shape_fn is not None:
-                assert_eq(shape_fn(shape), y.shape[dim])
-            return y
-
-        return wrapper
-
-    return _assert_shape_change_dec
-
-
 def identity(x):
     return x
 
@@ -438,52 +425,13 @@ def identity(x):
 def scale_shape_fn(scale: int | tuple[int, ...], shrink=False):
     def _shape_fn(shape: int | tuple[int, ...]):
         if shrink:
-            return _div(shape, scale)
-        return _mul(shape, scale)
+            return elementwise_intdiv(shape, scale)
+        return elementwise_mul(shape, scale)
 
     return _shape_fn
-
-
-def assert_shape(
-    input_shape: int | tuple[int, ...] | None = None,
-    output_shape: int | tuple[int, ...] | None = None,
-    shape_fn: Callable[[int | tuple[int, ...]], int | tuple[int, ...]] | None = None,
-    dim: int | slice = slice(),
-):
-    if not (input_shape is None and output_shape is None) and shape_fn is not None:
-        warnings.warn(
-            """Either input_shape or output_shape is provided alongside shape_fn.
-            shape_fn is intended to be used when you know neither input_shape nor output_shape.
-            Try to set both input_shape and output_shape."""
-        )
-
-    @element_wise2(Tensor)
-    def wrapper(x: Tensor, y: Tensor):
-        shape = x.shape[dim]
-        if input_shape is not None:
-            assert_eq(input_shape, shape)
-        if output_shape is not None:
-            assert_eq(output_shape, y.shape[dim])
-        if shape_fn is not None:
-            assert_eq(shape_fn(shape), y.shape[dim])
-
-    return wrapper
 
 
 size_dim = slice(
     2,
 )
 channel_dim = 1
-
-assert_no_shape_change = partial(assert_shape, shape_fn=identity)
-assert_no_size_change = assert_no_shape_change(dim=size_dim)
-assert_no_channel_change = assert_no_shape_change(dim=channel_dim)
-
-assert_no_shape_change_dec = partial(assert_shape_change, shape_fn=identity)
-assert_no_size_change_dec = assert_no_shape_change_dec(dim=size_dim)
-assert_no_channel_change_dec = assert_no_shape_change_dec(dim=channel_dim)
-
-assert_channel = partial(assert_shape, dim=channel_dim)
-assert_size = partial(assert_shape, dim=size_dim)
-assert_channel_dec = partial(assert_shape_change, dim=channel_dim)
-assert_size_dec = partial(assert_shape_change, dim=size_dim)

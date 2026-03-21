@@ -22,3 +22,5 @@ class Plan:
         self.conv_kernel_size = list(tuple(ks) for ks in self.jplan["conv_kernel_sizes"])
         self.stem_channel = self.jplan["UNet_base_num_features"]
         self.max_feature_channel = self.jplan["unet_max_num_features"]
+        self.n_stages = len(self.pool_strides)
+        self.dim = 3

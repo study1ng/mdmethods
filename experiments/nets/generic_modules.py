@@ -1,8 +1,7 @@
 from typing import Callable
 
-from experiments.sizefreeunet.base import (
+from experiments.nets.base import (
     Block,
-    BaseUNetModule,
     DownSampling,
     UpSampling,
 )
@@ -22,10 +21,8 @@ class SequentialBlock(Block):
     """
 
     def __init__(self, *blocks: Block):
-        assert len(blocks) != 0, f"Sequential Block needs more than 1 block"
-        super().__init__(
-            blocks[0].input_channel, blocks[-1].output_channel, blocks[0].size
-        )
+        assert len(blocks) != 0, f"Sequential Block needs at least 1 block"
+        super().__init__(blocks[0].input_channel, blocks[-1].output_channel)
         self.blocks = nn.Sequential(*blocks)
 
     def _forward(self, x: Tensor):
@@ -98,8 +95,15 @@ class ConvBlock(Block):
         assert dim is not None or isinstance(kernel_size, tuple), "dim is ambiguous"
         self.dim = dim if dim is not None else len(kernel_size)
         self.kernel_size = kernel_size
+
+        @element_wise(int)
+        def _assert_odd(i):
+            if i % 2 == 0:
+                raise ValueError(f"Expected odd kernel size got {self.kernel_size}")
+
+        _assert_odd(self.kernel_size)
         super().__init__(input_channel, output_channel)
-        self.module = self.module(self.dim)(
+        self.module = self.conv(self.dim)(
             self.input_channel, self.output_channel, self.kernel_size, padding="same"
         )
 
@@ -198,7 +202,7 @@ class InterpolateUpSample(UpSampling):
         super().__init__(input_channel, output_channel, pool_stride)
         self.module = self.conv(input_channel, output_channel, 1, dim=self.dim)
 
-    def forward(self, x):
+    def _forward(self, x):
         x = F.interpolate(x, scale_factor=self.pool_stride, mode=self.mode)
         x = self.module(x)
         return x
@@ -225,11 +229,12 @@ class RepeatingBlock(Block):
         output_channel,
         *args,
         n_blocks: int,
-        block_fn: Callable[[], Block],
+        block_fn: Callable[..., Block],
         **kwargs,
     ):
         self.n_blocks = n_blocks
         self.block_fn = block_fn
+        assert self.n_blocks > 0, f"n_blocks {self.n_blocks} <= 0"
         super().__init__(input_channel, output_channel)
         self.module = SequentialBlock(
             block_fn(input_channel, output_channel, *args, **kwargs),

@@ -6,10 +6,10 @@ from torch import Tensor, nn, tensor
 import torch
 from experiments.nets.plainunet import SingleConvBlock
 from experiments.utils import (
-    assert_divisable,
+    assert_divisible,
     get_gaussian_kernel,
     assert_eq,
-    prolong,
+    repeat,
     element_wise2,
 )
 import math
@@ -50,10 +50,10 @@ class HogLayer3D(nn.Module):
         signed: bool = True,
     ):
         super().__init__()
-        self.cell_size = prolong(cell_size, 3, int)
-        self.block_size = prolong(block_size, 3, int)
-        self.spacing = prolong(spacing, 3, (int, float))
-        self.gaussian_window_size = prolong(gaussian_window_size, 3, int)
+        self.cell_size = repeat(cell_size, 3, int)
+        self.block_size = repeat(block_size, 3, int)
+        self.spacing = repeat(spacing, 3, (int, float))
+        self.gaussian_window_size = repeat(gaussian_window_size, 3, int)
         self.signed = signed
         if self.signed:
             self.bin_count = 20
@@ -154,7 +154,7 @@ class HogLayer3D(nn.Module):
 
         bn = torch.argmax(phase, dim=-1)  # (B,C,H,W,D)
         if self.gaussian_window_size:
-            repeat_rate = assert_divisable(norm.shape[2:], self.gaussian_window_size)
+            repeat_rate = assert_divisible(norm.shape[2:], self.gaussian_window_size)
             temp_gkern = self.gaussian_window.repeat(repeat_rate)
             norm *= temp_gkern
         bn = (
@@ -175,7 +175,7 @@ class HogLayer3D(nn.Module):
             start_dim=-3
         )  # (B, C, H//self.cell_size, W//self.cell_size, D//self.cell_size, self.cell_size^3)
 
-        h_out, w_out, d_out = assert_divisable((h, w, d), self.cell_size)
+        h_out, w_out, d_out = assert_divisible((h, w, d), self.cell_size)
         out = torch.zeros(
             (b, c, h_out, w_out, d_out, self.bin_count),
             dtype=torch.float,
@@ -244,9 +244,9 @@ class HogHead(UNetHead):
 
         self.shrink = all(_ge(input_size, output_size))
         self.scales = (
-            assert_divisable(input_size, output_size)
+            assert_divisible(input_size, output_size)
             if self.shrink
-            else assert_divisable(output_size, input_size)
+            else assert_divisible(output_size, input_size)
         )
         self.ps = (
             nn.Sequential(
@@ -391,7 +391,7 @@ class MaskFeatModule(L.LightningModule):
         self.loss = loss_fn()
 
         if mask_size is None:
-            self.mask_size = assert_divisable(
+            self.mask_size = assert_divisible(
                 self.unet.patch_size, self.unet.skip_size[-1]  # (16,16,16)
             )
             print("default mask size: ", self.mask_size)
@@ -410,7 +410,7 @@ class MaskFeatModule(L.LightningModule):
             self.cell_size = _find_closest_divisor(self.mask_size, self.cell_size)
             print("default cell size: ", self.cell_size)
 
-        self.cell_per_mask = assert_divisable(self.mask_size, self.cell_size)
+        self.cell_per_mask = assert_divisible(self.mask_size, self.cell_size)
 
         self.hog = HogLayer3D(
             cell_size=self.cell_size,

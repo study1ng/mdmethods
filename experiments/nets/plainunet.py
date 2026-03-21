@@ -1,164 +1,76 @@
-from experiments.nets.baseunet import (
+from sys import maxsize
+from typing import Callable
+
+from experiments.nets.base import (
     Block,
     EncoderStage,
     DecoderStage,
     UNetHead,
+    UNetStem,
     UNetEncoder,
     UNetDecoder,
     UNet,
+    DownSampling,
 )
-from torch import nn, Tensor
-import torch.nn.functional as F
-from experiments.nets.generic_blocks import SequentialBlock
-from experiments.utils import element_wise
+from experiments.nets.generic_modules import (
+    ConvBlock,
+    InstanceNormBlock,
+    InterpolateUpSample,
+    WrapperBlock,
+    StridedConv,
+    RepeatingBlock,
+)
+from torch import Tensor, nn
 
-@element_wise(int)
-def pad(kernel_size: int | tuple[int, ...]) -> int | tuple[int, ...]:
-    """calculate the pad size from conv kernel size
-
-    Parameters
-    ----------
-    kernel_size : int | tuple[int, ...]
-        kernel size
-
-    Returns
-    -------
-    int | tuple[int, ...]
-        padding size
-    """
-    assert (kernel_size & 1) == 1, "kernel size should be odd"
-    return kernel_size // 2
+from experiments.utils import assert_eq, elementwise_min, repeat
 
 
-def conv(dim: int):
-    """get the corresponding Conv by dim
-
-    Parameters
-    ----------
-    dim : int
-        the dimension. select from 1~3
-
-    Returns
-    -------
-    nn.Module
-
-    Raises
-    ------
-    ValueError
-        if dim not in {1,2,3}
-    """
-    match dim:
-        case 1:
-            return nn.Conv1d
-        case 2:
-            return nn.Conv2d
-        case 3:
-            return nn.Conv3d
-        case _:
-            raise ValueError(f"dim {dim} should be 1~3")
-
-
-def instance_norm(dim: int):
-    """get the corresponding InstanceNorm by dim
-
-    Parameters
-    ----------
-    dim : int
-        the dimension. select from 1~3
-
-    Returns
-    -------
-    nn.Module
-
-    Raises
-    ------
-    ValueError
-        if dim not in {1,2,3}
-    """
-    match dim:
-        case 1:
-            return nn.InstanceNorm1d
-        case 2:
-            return nn.InstanceNorm2d
-        case 3:
-            return nn.InstanceNorm3d
-        case _:
-            raise ValueError(f"dim {dim} should be 1~3")
-
-
-class SingleConvBlock(Block):
-    """A block do conv once
-
-    Parameters
-    ----------
-    *args, **kwargs : any
-    the additional arguments for Conv
-    """
-    def __init__(
-        self,
-        input_channel,
-        output_channel,
-        size,
-        kernel_size: int | tuple[int, ...] = 3,
-        *args,
-        **kwargs,
-    ):
-        """
-
-        Parameters
-        ----------
-        *args, **kwargs : any
-        the additional arguments for Conv
-        """
-        self.kernel_size = kernel_size
-        self.padding = pad(kernel_size)
-        super().__init__(input_channel, output_channel, size)
-        self.conv = conv(self.dim)(
-            input_channel,
-            output_channel,
-            kernel_size=kernel_size,
-            stride=1,
-            padding=self.padding,
-            *args,
-            **kwargs,
-        )
-
-    def _forward(self, x):
-        return self.conv(x)
-
-
-class BasicBlock(Block):
-    """Basic Block which does conv for 2 times and do residual connection
-    """
-    nonlin = staticmethod(
-        lambda *args, **kwargs: nn.LeakyReLU(*args, inplace=True, **kwargs)
-    )
-    conv = SingleConvBlock
+class PlainResBlock(Block):
+    """Basic Block which does conv for 2 times and do residual connection"""
 
     def __init__(
         self,
         input_channel,
         output_channel,
-        size,
         kernel_size: int | tuple[int, ...] = 3,
+        *,
+        dim: int,
     ):
+        assert dim is not None
+        self.dim = dim
         self.kernel_size = kernel_size
-        super().__init__(input_channel, output_channel, size)
+        super().__init__(input_channel, output_channel)
         self.conv1 = self.conv(
-            input_channel, output_channel, size, kernel_size=kernel_size
+            self.input_channel,
+            self.output_channel,
+            kernel_size=self.kernel_size,
+            dim=self.dim,
         )
         self.conv2 = self.conv(
-            output_channel, output_channel, size, kernel_size=kernel_size
+            self.output_channel,
+            self.output_channel,
+            kernel_size=self.kernel_size,
+            dim=self.dim,
         )
-        self.resconv = self.conv(input_channel, output_channel, size, kernel_size=1)
-        self.norm1 = self.norm(output_channel)
-        self.norm2 = self.norm(output_channel)
-        self.act1 = self.nonlin()
-        self.act2 = self.nonlin()
+        self.resconv = self.conv(
+            self.input_channel, self.output_channel, kernel_size=1, dim=self.dim
+        )
+        self.norm1 = self.norm(self.output_channel, dim=self.dim)
+        self.norm2 = self.norm(self.output_channel, dim=self.dim)
+        self.act1 = self.nonlin(self.output_channel, self.output_channel)
+        self.act2 = self.nonlin(self.output_channel, self.output_channel)
 
     @property
     def norm(self):
-        return instance_norm(self.dim)
+        return InstanceNormBlock
+
+    @property
+    def nonlin(self):
+        return WrapperBlock.wrap(nn.LeakyReLU(inplace=True))
+
+    @property
+    def conv(self):
+        return ConvBlock
 
     def _forward(self, x: Tensor):
         y = self.norm2(self.conv2(self.act1(self.norm1(self.conv1(x)))))
@@ -166,248 +78,238 @@ class BasicBlock(Block):
         return self.act2(res + y)
 
 
-class BasicStridedConv(nn.Module):
-    """Down sampling function
-    """
-    nonlin = staticmethod(
-        lambda *args, **kwargs: nn.LeakyReLU(*args, inplace=True, **kwargs)
-    )
+class PlainStridedConv(DownSampling):
+    """Down sampling function"""
 
     def __init__(
         self,
         input_channel,
         output_channel,
+        pool_stride: int | tuple[int, ...] = 2,
+        *,
         dim: int,
         kernel_size: int | tuple[int, ...] = 3,
-        pool_stride: int | tuple[int, ...] = 2,
     ):
-        super().__init__()
-        self.kernel_size = kernel_size
-        self.padding = pad(kernel_size)
-        self.input_channel = input_channel
-        self.output_channel = output_channel
+        assert dim is not None
         self.dim = dim
-        self.pool_stride = pool_stride
-
-        self.conv1 = self.conv(
-            input_channel,
-            output_channel,
-            kernel_size=kernel_size,
-            padding=self.padding,
-            stride=pool_stride,
+        self.kernel_size = kernel_size
+        super().__init__(input_channel, output_channel, pool_stride)
+        self.conv1 = self.strided_conv(
+            self.input_channel,
+            self.output_channel,
+            kernel_size=self.kernel_size,
+            pool_stride=self.pool_stride,
+            dim=self.dim,
         )
         self.conv2 = self.conv(
-            output_channel,
-            output_channel,
-            kernel_size=kernel_size,
-            padding=self.padding,
+            self.output_channel,
+            self.output_channel,
+            kernel_size=self.kernel_size,
+            dim=self.dim,
         )
-        self.resconv = self.conv(
-            input_channel,
-            output_channel,
+        self.resconv = self.strided_conv(
+            self.input_channel,
+            self.output_channel,
             kernel_size=1,
-            stride=pool_stride,
+            pool_stride=self.pool_stride,
+            dim=self.dim,
         )
-        self.norm1 = self.norm(output_channel)
-        self.norm2 = self.norm(output_channel)
-        self.act1 = self.nonlin()
-        self.act2 = self.nonlin()
+        self.norm1 = self.norm(self.output_channel, dim=self.dim)
+        self.norm2 = self.norm(self.output_channel, dim=self.dim)
+        self.act1 = self.nonlin(self.output_channel, self.output_channel)
+        self.act2 = self.nonlin(self.output_channel, self.output_channel)
 
     @property
     def norm(self):
-        return instance_norm(self.dim)
+        return InstanceNormBlock
 
     @property
     def conv(self):
-        return conv(self.dim)
+        return ConvBlock
 
-    def forward(self, x: Tensor):
+    @property
+    def strided_conv(self):
+        return StridedConv
+
+    @property
+    def nonlin(self):
+        return WrapperBlock.wrap(nn.LeakyReLU(inplace=True))
+
+    def _forward(self, x: Tensor):
         y = self.norm2(self.conv2(self.act1(self.norm1(self.conv1(x)))))
         res = self.resconv(x)
         return self.act2(res + y)
 
 
-class UpsampleLayer(nn.Module):
-    """up sampling function
-    """
+class PlainEncoderStage(EncoderStage):
+    """Plain UNet Encoder Stage"""
+
     def __init__(
         self,
         input_channel,
+        pool_channel,
         output_channel,
-        dim: int = 3,
-        pool_stride: int | tuple[int, ...] = 2,
-        mode="nearest",
-    ):
-        super().__init__()
-        self.input_channel = input_channel
-        self.output_channel = output_channel
-        self.dim = dim
-        self.pool_stride = pool_stride
-        self.mode = mode
-        self.conv_layer = self.conv(input_channel, output_channel, kernel_size=1)
-
-    def forward(self, x):
-        x = F.interpolate(x, scale_factor=self.pool_stride, mode=self.mode)
-        x = self.conv_layer(x)
-        return x
-
-    @property
-    def conv(self):
-        return conv(self.dim)
-
-
-class RepeatingBlock(Block):
-    """repeat a block
-
-    Parameters
-    ----------
-    n_blocks : int
-        how many times to repeat
-    block_fn : Function
-        function which get no argument and return a Block
-    """
-    def __init__(
-        self,
-        input_channel,
-        output_channel,
-        size,
-        n_blocks: int,
         kernel_size: int | tuple[int, ...] = 3,
-        block_fn=BasicBlock,
+        pool_stride: int | tuple[int, ...] = 2,
+        n_blocks: int = 3,
+        *,
+        dim: int,
     ):
+        self.kernel_size = kernel_size
+        self.n_blocks = n_blocks
+        self.dim = dim
+        super().__init__(
+            input_channel,
+            pool_channel,
+            output_channel,
+            pool_stride=pool_stride,
+        )
+
+    def _build_block(self):
+        return RepeatingBlock(
+            self.pool_channel,
+            self.output_channel,
+            n_blocks=self.n_blocks,
+            block_fn=PlainResBlock,
+            kernel_size=self.kernel_size,
+            dim=self.dim,
+        )
+
+    def _build_pool(self):
+        return StridedConv(
+            self.input_channel,
+            self.pool_channel,
+            kernel_size=self.kernel_size,
+            pool_stride=self.pool_stride,
+            dim=self.dim,
+        )
+
+
+class PlainDecoderStage(DecoderStage):
+    """Plain UNet Decoder Stage"""
+
+    def __init__(
+        self,
+        input_channel,
+        pool_channel,
+        skip_channel,
+        output_channel,
+        pool_stride: int | tuple[int, ...] = 2,
+        kernel_size: int | tuple[int, ...] = 3,
+        n_blocks: int = 3,
+        *,
+        dim: int,
+    ):
+        self.dim = dim
         self.n_blocks = n_blocks
         self.kernel_size = kernel_size
-        super().__init__(input_channel, output_channel, size)
-        self.module = SequentialBlock(
-            block_fn(input_channel, output_channel, size, kernel_size=kernel_size),
-            *(
-                block_fn(output_channel, output_channel, size, kernel_size=kernel_size)
-                for _ in range(n_blocks - 1)
-            ),
+        super().__init__(
+            input_channel,
+            pool_channel,
+            skip_channel,
+            output_channel,
+            pool_stride=pool_stride,
+        )
+
+    def _build_block(self):
+        return RepeatingBlock(
+            self.pool_channel + self.skip_channel,
+            self.output_channel,
+            n_blocks=self.n_blocks,
+            block_fn=PlainResBlock,
+            kernel_size=self.kernel_size,
+            dim=self.dim,
+        )
+
+    def _build_pool(self):
+        return InterpolateUpSample(
+            self.input_channel,
+            self.pool_channel,
+            pool_stride=self.pool_stride,
+            dim=self.dim,
+        )
+
+
+class PlainStem(UNetStem):
+    def __init__(
+        self,
+        input_channel,
+        output_channel,
+        *args,
+        n_blocks: int,
+        block_fn: Callable[[], Block],
+        **kwargs,
+    ):
+        self.n_blocks = n_blocks
+        self.block_fn = block_fn
+        super().__init__(input_channel, output_channel)
+        self.module = RepeatingBlock(
+            input_channel,
+            output_channel,
+            *args,
+            n_blocks=n_blocks,
+            block_fn=block_fn,
+            **kwargs,
         )
 
     def _forward(self, x):
         return self.module(x)
 
 
-class PlainEncoderStage(EncoderStage):
-    """Plain UNet Encoder Stage
-    """
-    def __init__(
-        self,
-        input_channel,
-        after_sample_channel,
-        output_channel,
-        input_size,
-        output_size,
-        pool_stride: int | tuple[int, ...] = 2,
-        kernel_size: int | tuple[int, ...] = 3,
-        n_blocks: int = 3,
-    ):
-        self.kernel_size = kernel_size
-        self.n_blocks = n_blocks
+class PlainHead(UNetHead):
+    """Plain UNet Head which is a Block"""
+
+    def __init__(self, input_channel, output_channel, *, dim: int):
+        self.output_channel = output_channel
+        self.dim = dim
         super().__init__(
-            input_channel,
-            after_sample_channel,
-            output_channel,
-            input_size,
-            output_size,
-            pool_stride=pool_stride,
-        )
-
-    def _build_block(self):
-        return RepeatingBlock(
-            self.after_sample_channel,
-            self.output_channel,
-            self.output_size,
-            kernel_size=self.kernel_size,
-            n_blocks=self.n_blocks,
-        )
-
-    def _build_sample(self):
-        return BasicStridedConv(
-            self.input_channel,
-            self.after_sample_channel,
-            dim=self.dim,
-            pool_stride=self.pool_stride,
-            kernel_size=self.kernel_size,
-        )
-
-
-class PlainDecoderStage(DecoderStage):
-    """Plain UNet Decoder Stage
-    """
-    def __init__(
-        self,
-        input_channel,
-        after_sample_channel,
-        skip_channel,
-        output_channel,
-        input_size,
-        output_size,
-        pool_stride: int | tuple[int, ...] = 2,
-        kernel_size: int | tuple[int, ...] = 3,
-        n_blocks: int = 3,
-    ):
-        self.n_blocks = n_blocks
-        self.kernel_size = kernel_size
-        super().__init__(
-            input_channel,
-            after_sample_channel,
-            skip_channel,
-            output_channel,
-            input_size,
-            output_size,
-            pool_stride=pool_stride,
-        )
-
-    def _build_block(self):
-        return RepeatingBlock(
-            self.after_sample_channel + self.skip_channel,
-            self.output_channel,
-            self.output_size,
-            n_blocks=self.n_blocks,
-            kernel_size=self.kernel_size,
-        )
-
-    def _build_sample(self):
-        return UpsampleLayer(
-            self.input_channel,
-            self.after_sample_channel,
-            dim=self.dim,
-            pool_stride=self.pool_stride,
-        )
-
-BasicStem = RepeatingBlock
-"""
-Plain UNet Stem
-"""
-
-class BasicHead(UNetHead):
-    """Plain UNet Head which is a Block
-    """
-    def __init__(self, input_channel, output_channel, size):
-        super().__init__(
-            input_size=size,
             input_channel=input_channel,
-            output_size=size,
-            output_channel=output_channel,
         )
-        self.conv = conv(self.dim)(input_channel, output_channel, kernel_size=1)
+        self.conv = ConvBlock(
+            self.input_channel, self.output_channel, kernel_size=1, dim=self.dim
+        )
 
     def _forward(self, x):
         return self.conv(x)
 
+    @classmethod
+    def attach_to_unet(cls, unet: "PlainUNet"):
+        if unet.deep_supervision:
+            unet.decoder.head = nn.ModuleList(
+                PlainHead(skip_channel, unet.output_channel, dim=unet.dim)
+                for skip_channel in unet.skip_channels
+            )
+        else:
+            unet.decoder.head = PlainHead(
+                unet.skip_channels[0], unet.output_channel, dim=unet.dim
+            )
+
 
 class PlainEncoder(UNetEncoder):
-    """Plain UNet Encoder
-    """
+    """Plain UNet Encoder"""
+
+    def __init__(
+        self,
+        n_stages,
+        input_channel,
+        skip_channels,
+        pool_strides,
+        kernel_size: tuple[tuple[int, ...], ...],
+        *,
+        dim: int,
+    ):
+        self.kernel_size = kernel_size
+        self.dim = dim
+        super().__init__(n_stages, input_channel, skip_channels, pool_strides)
+
     def _build_stem(self):
-        return BasicStem(
+        return PlainStem(
             self.input_channel,
             self.stem_channel,
-            self.input_size,
             n_blocks=3,
+            block_fn=PlainResBlock,
+            kernel_size=self.kernel_size[0],
+            dim=self.dim,
         )
 
     def _build_stages(self):
@@ -418,28 +320,43 @@ class PlainEncoder(UNetEncoder):
                     self.skip_channels[i],
                     self.skip_channels[i + 1],
                     self.skip_channels[i + 1],
-                    self.skip_size[i],
-                    self.skip_size[i + 1],
                     pool_stride=self.pool_strides[i],
-                    kernel_size=self.conv_kernel_size[i],
+                    kernel_size=self.kernel_size[i + 1],
+                    dim=self.dim,
                 )
             )
         return nn.ModuleList(stages)
 
 
 class PlainDecoder(UNetDecoder):
-    """Plain UNet Decoder
-    """
+    """Plain UNet Decoder"""
+
+    def __init__(
+        self,
+        n_stages,
+        skip_channels,
+        output_channel,
+        pool_strides,
+        kernel_size: tuple[tuple[int, ...], ...],
+        *,
+        deep_supervision=False,
+        dim: int,
+    ):
+        self.kernel_size = kernel_size
+        self.dim = dim
+        self.output_channel = output_channel
+        super().__init__(
+            n_stages, skip_channels, pool_strides, deep_supervision=deep_supervision
+        )
+
     def _build_head(self):
         if self.deep_supervision:
             return nn.ModuleList(
-                BasicHead(skip_channel, self.output_channel, size=skip_size)
-                for skip_channel, skip_size in zip(self.skip_channels, self.skip_size)
+                PlainHead(skip_channel, self.output_channel, dim=self.dim)
+                for skip_channel in self.skip_channels
             )
         else:
-            return BasicHead(
-                self.skip_channels[0], self.output_channel, size=self.skip_size[0]
-            )
+            return PlainHead(self.skip_channels[0], self.output_channel, dim=self.dim)
 
     def _build_stages(self):
         stages = []
@@ -450,41 +367,94 @@ class PlainDecoder(UNetDecoder):
                     self.skip_channels[i],
                     self.skip_channels[i],
                     self.skip_channels[i],
-                    self.skip_size[i + 1],
-                    self.skip_size[i],
                     pool_stride=self.pool_strides[i],
-                    kernel_size=self.conv_kernel_size[i],
+                    kernel_size=self.kernel_size[i + 1],
+                    dim=self.dim,
                 )
             )
         return nn.ModuleList(stages)
 
 
 class PlainUNet(UNet):
-    """Plain UNet
-    """
+    def __init__(
+        self,
+        n_stages,
+        input_channel,
+        skip_channels,
+        output_channel: int,
+        pool_strides=2,
+        kernel_size: int | tuple[int, ...] | list[int] | list[tuple[int, ...]] = 3,
+        *,
+        deep_supervision=False,
+        dim: int,
+        feature_channel_limitation: int = maxsize,
+    ):
+        self.output_channel = output_channel
+        self.kernel_size = kernel_size
+        self.feature_channel_limitation = feature_channel_limitation
+
+        if isinstance(skip_channels, (int, tuple)):
+            skip_channels = elementwise_min(skip_channels)
+        else:
+            skip_channels = [elementwise_min(sc) for sc in skip_channels]
+
+        if isinstance(self.kernel_size, int):
+            self.kernel_size = repeat(self.kernel_size, self.dim)
+        if isinstance(self.kernel_size, tuple):
+            self.kernel_size = repeat(
+                self.kernel_size, self.n_stages + 1, wrap_type=list
+            )
+        elif isinstance(self.kernel_size, list) and isinstance(
+            self.kernel_size[0], int
+        ):
+            self.kernel_size = [repeat(ps, self.dim) for ps in self.kernel_size]
+
+        assert_eq(self.n_stages + 1, len(self.kernel_size))
+        self.kernel_size = tuple(self.kernel_size)
+        super().__init__(
+            n_stages,
+            input_channel,
+            skip_channels,
+            pool_strides,
+            deep_supervision=deep_supervision,
+            dim=dim,
+        )
+
     def _build_decoder(self):
         return PlainDecoder(
-            self.output_channel,
-            self.skip_size,
-            self.skip_channels,
-            self.n_stages,
-            self.conv_kernel_size,
-            self.pool_strides,
-            self.pool_channel_increase_ratio,
-            self.deep_supervision,
-            self.max_feature_channel
+            n_stages=self.n_stages,
+            skip_channels=self.skip_channels,
+            output_channel=self.output_channel,
+            pool_strides=self.pool_strides,
+            kernel_size=self.kernel_size,
+            deep_supervision=self.deep_supervision,
+            dim=self.dim,
         )
 
     def _build_encoder(self):
         return PlainEncoder(
-            self.patch_size,
-            self.patch_channel,
-            self.stem_channel,
-            self.n_stages,
-            self.skip_channels,
-            self.skip_size,
-            self.conv_kernel_size,
-            self.pool_strides,
-            self.pool_channel_increase_ratio,
-            self.max_feature_channel
+            n_stages=self.n_stages,
+            input_channel=self.input_channel,
+            skip_channels=self.skip_channels,
+            pool_strides=self.pool_strides,
+            kernel_size=self.kernel_size,
+            dim=self.dim,
         )
+
+    @staticmethod
+    def _plan_to_arguments(
+        plan,
+        input_channel,
+        output_channel,
+        skip_channel_ratio=2,
+        deep_supervision=False,
+        **kwargs,
+    ):
+        args = UNet._plan_to_arguments(
+            plan, input_channel, skip_channel_ratio, deep_supervision, **kwargs
+        )
+        args["output_channel"] = output_channel
+        args["feature_channel_limitation"] = plan.max_feature_channel
+        args["kernel_size"] = plan.conv_kernel_size
+        args.update(kwargs)
+        return args

@@ -2,7 +2,7 @@ from experiments.mim.preprocess import PlannedSSLPreprocessor as Preprocessor
 from experiments.mim.datamodule import SSLDataModule as DataModule
 from experiments.mim.model import MIMModule as Model
 from experiments.trainer import PlannedExperiment
-from experiments.nets.u_bimamba import UBiMamba as UNet
+from experiments.nets.ubimamba import UBiMamba as UNet
 from experiments.prune import SpacingShapeStrictPruner as Pruner
 from experiments.analyze import CTAnalyzer as Analyzer
 import torch
@@ -31,7 +31,7 @@ class MIM(PlannedExperiment):
 
     def _build_module(self):
         unet = UNet.from_plan(
-            self.plan, patch_channel=1, output_channel=1, deep_supervision=True
+            self.plan, input_channel=1, output_channel=1, deep_supervision=True
         )
         lm = Model(unet, mask_ratio=0.6)
         return lm

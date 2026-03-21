@@ -1,11 +1,15 @@
 from sys import maxsize
 
-from torch import autocast, nn
+from experiments.nets.base import Block
 import torch
+from torch import nn, autocast
 from mamba_ssm import Mamba
-from experiments.nets.baseunet import Block
-from experiments.nets.plainunet import PlainEncoderStage, PlainEncoder, PlainUNet
-from experiments.nets.generic_blocks import SequentialBlock
+from experiments.nets.plainunet import (
+    PlainEncoderStage,
+    PlainEncoder,
+    PlainUNet,
+)
+from experiments.nets.generic_modules import SequentialBlock
 
 
 class BiMambaBlock(Block):
@@ -15,12 +19,11 @@ class BiMambaBlock(Block):
         self,
         input_channel,
         output_channel,
-        size,
         d_state=16,
         d_conv=4,
         expand=2,
     ):
-        super().__init__(input_channel, output_channel, size)
+        super().__init__(input_channel, output_channel)
         print(f"MambaLayer: dim: {input_channel}")
         self.d_state = d_state
         self.d_conv = d_conv
@@ -63,29 +66,30 @@ class MEncoderStage(PlainEncoderStage):
     def __init__(
         self,
         input_channel,
-        after_sample_channel,
+        pool_channel,
         output_channel,
-        input_size,
-        output_size,
-        pool_stride=2,
-        kernel_size=3,
+        kernel_size,
+        pool_stride,
         n_blocks=3,
         d_state=16,
         d_conv=4,
         expand=2,
+        *,
+        dim: int,
     ):
         self.d_state = d_state
         self.d_conv = d_conv
         self.expand = expand
+        self.dim = dim
+        assert n_blocks > 1, f"n_blocks should be greater than 1"
         super().__init__(
             input_channel,
-            after_sample_channel,
+            pool_channel,
             output_channel,
-            input_size,
-            output_size,
-            pool_stride,
             kernel_size,
-            n_blocks,
+            pool_stride,
+            n_blocks=n_blocks - 1,
+            dim=self.dim,
         )
 
     def _build_block(self):
@@ -94,7 +98,6 @@ class MEncoderStage(PlainEncoderStage):
             BiMambaBlock(
                 self.output_channel,
                 self.output_channel,
-                self.output_size,
                 self.d_state,
                 self.d_conv,
                 self.expand,
@@ -107,16 +110,13 @@ class MEncoder(PlainEncoder):
 
     def __init__(
         self,
-        input_size,
-        input_channel,
-        stem_channel,
         n_stages,
+        input_channel,
         skip_channels,
-        skip_size,
-        conv_kernel_size=3,
-        pool_strides=2,
-        pool_channel_increase_ratio=2,
-        max_feature_channel=maxsize,
+        pool_strides,
+        kernel_size: tuple[tuple[int, ...], ...],
+        *,
+        dim: int,
         d_state=16,
         d_conv=4,
         expand=2,
@@ -125,16 +125,12 @@ class MEncoder(PlainEncoder):
         self.d_conv = d_conv
         self.expand = expand
         super().__init__(
-            input_size,
-            input_channel,
-            stem_channel,
-            n_stages,
-            skip_channels,
-            skip_size,
-            conv_kernel_size,
-            pool_strides,
-            pool_channel_increase_ratio,
-            max_feature_channel=max_feature_channel,
+            n_stages=n_stages,
+            input_channel=input_channel,
+            skip_channels=skip_channels,
+            pool_strides=pool_strides,
+            kernel_size=kernel_size,
+            dim=dim,
         )
 
     def _build_stages(self):
@@ -145,33 +141,30 @@ class MEncoder(PlainEncoder):
                     self.skip_channels[i],
                     self.skip_channels[i + 1],
                     self.skip_channels[i + 1],
-                    self.skip_size[i],
-                    self.skip_size[i + 1],
                     pool_stride=self.pool_strides[i],
-                    kernel_size=self.conv_kernel_size[i],
+                    kernel_size=self.kernel_size[i + 1],
                     d_state=self.d_state,
                     d_conv=self.d_conv,
                     expand=self.expand,
+                    dim=self.dim,
                 )
             )
         return nn.ModuleList(stages)
 
 
 class UBiMamba(PlainUNet):
-    """UBiMamba"""
-
     def __init__(
         self,
-        patch_size,
-        patch_channel,
-        stem_channel,
-        output_channel,
         n_stages,
-        conv_kernel_size=3,
+        input_channel,
+        skip_channels,
+        output_channel,
         pool_strides=2,
-        pool_channel_increase_ratio=2,
+        kernel_size=3,
+        *,
         deep_supervision=False,
-        max_feature_channel: int = maxsize,
+        dim,
+        feature_channel_limitation=maxsize,
         d_state=16,
         d_conv=4,
         expand=2,
@@ -180,30 +173,25 @@ class UBiMamba(PlainUNet):
         self.d_conv = d_conv
         self.expand = expand
         super().__init__(
-            patch_size,
-            patch_channel,
-            stem_channel,
-            output_channel,
             n_stages,
-            conv_kernel_size,
+            input_channel,
+            skip_channels,
+            output_channel,
             pool_strides,
-            pool_channel_increase_ratio,
-            deep_supervision,
-            max_feature_channel=max_feature_channel,
+            kernel_size,
+            deep_supervision=deep_supervision,
+            dim=dim,
+            feature_channel_limitation=feature_channel_limitation,
         )
 
     def _build_encoder(self):
         return MEncoder(
-            self.patch_size,
-            self.patch_channel,
-            self.stem_channel,
-            self.n_stages,
-            self.skip_channels,
-            self.skip_size,
-            self.conv_kernel_size,
-            self.pool_strides,
-            self.pool_channel_increase_ratio,
-            max_feature_channel=self.max_feature_channel,
+            n_stages=self.n_stages,
+            input_channel=self.input_channel,
+            skip_channels=self.skip_channels,
+            pool_strides=self.pool_strides,
+            kernel_size=self.kernel_size,
+            dim=self.dim,
             d_state=self.d_state,
             d_conv=self.d_conv,
             expand=self.expand,

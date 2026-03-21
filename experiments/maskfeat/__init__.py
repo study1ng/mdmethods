@@ -1,5 +1,5 @@
 from experiments.trainer import PlannedExperiment
-from experiments.nets.u_bimamba import UBiMamba as UNet
+from experiments.nets.ubimamba import UBiMamba as UNet
 from experiments.prune import SpacingShapeStrictPruner as Pruner
 from experiments.analyze import CTAnalyzer as Analyzer
 from experiments.mim.datamodule import SSLDataModule as DataModule
