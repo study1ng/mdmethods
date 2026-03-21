@@ -4,7 +4,7 @@ import einops.layers
 import einops.layers.torch
 from torch import Tensor, nn, tensor
 import torch
-from experiments.nets.plainunet import SingleConvBlock
+from experiments.nets.generic_modules import ConvBlock
 from experiments.utils import (
     assert_divisible,
     get_gaussian_kernel,
@@ -20,7 +20,7 @@ from math import prod
 from experiments.config import image_key
 import lightning as L
 import torch
-from experiments.nets import UNet, UNetHead
+from experiments.nets.base import UNet, UNetHead
 import sympy
 
 
@@ -256,7 +256,7 @@ class HogHead(UNetHead):
                     p1=self.scales[1],
                     p2=self.scales[2],
                 ),
-                SingleConvBlock(
+                ConvBlock(
                     input_channel=input_channel * prod(self.scales),
                     output_channel=output_channel * hog_channel,
                     size=output_size,
@@ -268,7 +268,7 @@ class HogHead(UNetHead):
             )
             if self.shrink
             else nn.Sequential(
-                SingleConvBlock(
+                ConvBlock(
                     input_channel=input_channel,
                     output_channel=output_channel * prod(self.scales) * hog_channel,
                     size=input_size,

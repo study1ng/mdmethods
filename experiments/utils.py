@@ -1,3 +1,4 @@
+from fractions import Fraction
 from pathlib import Path
 import json
 from datetime import datetime
@@ -5,7 +6,7 @@ from functools import wraps
 from shutil import rmtree
 import uuid
 import threading
-from typing import Tuple, Union
+from typing import Callable, Tuple, Union
 from torch import Tensor
 import torch
 
@@ -105,7 +106,7 @@ def repeat(
     return wrap_type(v for _ in range(dim))
 
 
-def element_wise(types = object, wrap_type=tuple):
+def element_wise(types=object, wrap_type=tuple):
     """wrapper to make a function can be used for Iterable
 
     Parameters
@@ -146,7 +147,7 @@ def element_wise(types = object, wrap_type=tuple):
     return _element_wise
 
 
-def element_wise2(types = object, wrap_type=tuple):
+def element_wise2(types=object, wrap_type=tuple):
     """like element_wise, but get two argument. if both is not types, assert its length is same
 
     Parameters
@@ -292,9 +293,11 @@ def size_of_tensor(x: Tensor) -> Tuple[int, ...]:
     """
     return x.shape[2:]
 
+
 @element_wise2()
 def elementwise_div(l, r):
     return l / r
+
 
 @element_wise2()
 def elementwise_is_divisor(l, r):
@@ -310,19 +313,27 @@ def elementwise_intdiv(l, r):
 def elementwise_mul(l, r):
     return l * r
 
+
 @element_wise2()
 def elementwise_gt(l, r):
     return l > r
+
+
 @element_wise2()
 def elementwise_le(l, r):
     return l <= r
 
+
 @element_wise2()
 def elementwise_min(l, r):
     return min(l, r)
+
+
 @element_wise2()
 def elementwise_max(l, r):
     return max(l, r)
+
+
 def divmod_accept_tuple(
     lhs: int | Tuple[int, ...], rhs: int | Tuple[int, ...]
 ) -> Tuple[Union[int, Tuple[int, ...]], Union[int, Tuple[int, ...]]]:
@@ -422,13 +433,52 @@ def identity(x):
     return x
 
 
-def scale_shape_fn(scale: int | tuple[int, ...], shrink=False):
-    def _shape_fn(shape: int | tuple[int, ...]):
-        if shrink:
-            return elementwise_intdiv(shape, scale)
-        return elementwise_mul(shape, scale)
+@element_wise()
+def numerator(i: Fraction):
+    return to_fraction(i).numerator
 
-    return _shape_fn
+
+@element_wise()
+def denominator(i: Fraction):
+    return to_fraction(i).denominator
+
+
+@element_wise()
+def assert_to_integer(i: Fraction):
+    i = to_fraction(i)
+    assert_eq(1, i.denominator)
+    return i.numerator
+
+@element_wise2()
+def elementwise_eq(i, j):
+    return i == j
+
+def is_integer(i):
+    return elementwise_eq(denominator(i), 1)
+
+@element_wise2()
+def assert_integer_scale(shape: int, scale: Fraction):
+    out = shape * scale
+    return assert_to_integer(out)
+
+
+@element_wise()
+def to_fraction(f):
+    return Fraction(f)
+
+
+def scale_shape_fn(scale) -> Callable[[int | tuple[int, ...]], int | tuple[int, ...]]:
+
+    scale = to_fraction(scale)
+
+    def wrapper(shape: int):
+        return assert_to_integer(elementwise_mul(shape, scale))
+
+    return wrapper
+
+@element_wise()
+def reciprocal(i):
+    return Fraction(1, i)
 
 
 size_dim = slice(

@@ -1,9 +1,12 @@
+from fractions import Fraction
+from logging import warning
+import math
 import lightning as L
 import torch, einops.layers.torch
 from torch import nn, tensor, Tensor
 import torch.nn.functional as F
 from functools import partial
-from experiments.nets.base import UNet, UNetHead
+from experiments.nets.base import Pool, UNet, UNetHead
 from experiments.config import image_key
 from experiments.nets.generic_modules import ConvBlock
 from math import prod
@@ -11,157 +14,295 @@ from experiments.nets.plainunet import PlainUNet
 from experiments.utils import (
     assert_divisible,
     assert_eq,
+    assert_to_integer,
+    denominator,
+    elementwise_div,
     elementwise_gt,
     elementwise_le,
     elementwise_mul,
+    is_integer,
+    numerator,
+    reciprocal,
+    assert_integer_scale,
     size_of_tensor,
+    to_fraction,
+    repeat,
 )
 
 
-def pixelshuffle(
-    dim: int, *scales: int, shrink: bool = False
-) -> einops.layers.torch.Rearrange:
-    assert_eq(dim, len(scales))
-    scale_characters = [f"p{i}" for i in range(dim)]
-    scale_pattern = " ".join(scale_characters)
-    dimensions = [f"d{i}" for i in range(dim)]
-    dimensions_pattern = " ".join(dimensions)
-    scale_dims = [f"({dimensions[i]} {scale_characters[i]})" for i in range(dim)]
-    scale_dims_pattern = " ".join(scale_dims)
-    scale_dict = {scale_characters[i]: scales[i] for i in range(dim)}
-    if shrink:
-        pattern = (
-            f"b c {scale_dims_pattern} -> b (c {scale_pattern}) {dimensions_pattern}"
+class RearrangePool(Pool):
+    def __init__(self, input_channel, pool_scale: Fraction | tuple[Fraction, ...]):
+        expand_scale = numerator(pool_scale)
+        reciprocal_shrink_scale = denominator(pool_scale)
+        output_channel = assert_divisible(input_channel, prod(expand_scale)) * prod(
+            reciprocal_shrink_scale
         )
-    else:
-        pattern = (
-            f"b (c {scale_pattern}) {dimensions_pattern} -> b c {scale_dims_pattern}"
+        super().__init__(input_channel, output_channel, pool_scale)
+        self.module = self.rearrange(pool_scale)
+
+    @staticmethod
+    def rearrange(pool_scale: Fraction | tuple[Fraction, ...]):
+        if isinstance(pool_scale):
+            pool_scale = (pool_scale,)
+        dim = len(pool_scale)
+        expand_scale = numerator(pool_scale)
+        reciprocal_shrink_scale = denominator(pool_scale)
+        # b (c expand_scale) *(h shrink_scale) -> b (c shrink_scale) *(h expand_scale)
+        expand_scale_characters = tuple(f"e{i}" for i in range(dim))
+        shrink_scale_characters = tuple(f"s{i}" for i in range(dim))
+        spatial_characters = tuple(f"h{i}" for i in range(dim))
+        spatial_reprs_former = tuple(
+            f"({spatial_characters[i]} {shrink_scale_characters[i]})"
+            for i in range(dim)
         )
-    return einops.layers.torch.Rearrange(pattern, **scale_dict)
+        spatial_reprs_later = tuple(
+            f"({spatial_characters[i]} {expand_scale_characters[i]})"
+            for i in range(dim)
+        )
+        expand_scale_dic = {
+            expand_scale_characters[i]: expand_scale[i] for i in range(dim)
+        }
+        shrink_scale_dic = {
+            shrink_scale_characters[i]: reciprocal_shrink_scale[i] for i in range(dim)
+        }
+        pattern_former = f'b (c {" ".join(expand_scale_characters)}) {" ".join(spatial_reprs_former)}'
+        pattern_later = (
+            f'b (c {" ".join(shrink_scale_characters)}) {" ".join(spatial_reprs_later)}'
+        )
+        return einops.layers.torch.Rearrange(
+            f"{pattern_former} -> {pattern_later}",
+            **expand_scale_dic,
+            **shrink_scale_dic,
+        )
+
+    def _forward(self, x):
+        return self.module(x)
+
+
+class PixelShufflePool(Pool):
+    def __init__(
+        self,
+        input_channel,
+        output_channel,
+        pool_scale: Fraction | tuple[Fraction, ...],
+        *,
+        conv_position: float = 1.0,  # -1.: conv -> rearrange, -0.: rearrange(shrink) -> conv -> rearrange(expand), 0.: rearrange(expand) -> conv -> rearrange(shrink), 1.: rearrange -> conv
+        dim: int,
+    ):
+        self.conv_position = conv_position
+        pool_scale = repeat(pool_scale, dim=dim, types=Fraction)
+        super().__init__(input_channel, output_channel, pool_scale)
+        if conv_position == -1.0:
+            self.module = self._conv_first()
+        elif conv_position == -0.0 and math.copysign(1, conv_position) == -1.0:
+            self.module = self._shrink_first()
+        elif conv_position == 0.0:
+            self.module = self._expand_first()
+        elif conv_position == 1.0:
+            self.module = self._conv_last()
+        else:
+            raise ValueError(
+                f"conv_position need to be in -1.0, -0.0, 0.0, 1.0, not {conv_position}"
+            )
+
+    def _conv_first(self):
+        # conv_channel / pool_scale = output_channel
+        conv_channel = assert_to_integer(self.output_channel * prod(self.pool_scale))
+        return nn.Sequential(
+            ConvBlock(
+                input_channel=self.input_channel,
+                output_channel=conv_channel,
+                kernel_size=1,
+                dim=self.dim,
+            ),
+            RearrangePool(input_channel=conv_channel, pool_scale=self.pool_scale),
+        )
+
+    def _conv_last(self):
+        # input_channel / pool_scale = conv_channel
+        conv_channel = assert_to_integer(
+            self.input_channel * prod(reciprocal(self.pool_scale))
+        )
+        return nn.Sequential(
+            RearrangePool(input_channel=self.input_channel, pool_scale=self.pool_scale),
+            ConvBlock(
+                input_channel=conv_channel,
+                output_channel=self.output_channel,
+                kernel_size=1,
+                dim=self.dim,
+            ),
+        )
+
+    def _shrink_first(self):
+        expand_scale = to_fraction(numerator(self.pool_scale))
+        shrink_scale = reciprocal(denominator(self.pool_scale))
+        # input_channel / shrink_scale = before_conv_channel
+        # after_conv_channel / expand_scale = output_channel
+        before_conv_channel = assert_to_integer(
+            self.input_channel * prod(reciprocal(shrink_scale))
+        )
+        after_conv_channel = assert_to_integer(
+            self.output_channel * prod(reciprocal(expand_scale))
+        )
+        return nn.Sequential(
+            RearrangePool(input_channel=self.input_channel, pool=shrink_scale),
+            ConvBlock(
+                input_channel=before_conv_channel,
+                output_channel=after_conv_channel,
+                kernel_size=1,
+                dim=self.dim,
+            ),
+            RearrangePool(input_channel=after_conv_channel, pool_scale=expand_scale),
+        )
+
+    def _expand_first(self):
+        expand_scale = to_fraction(numerator(self.pool_scale))
+        shrink_scale = reciprocal(denominator(self.pool_scale))
+        # input_channel / expand_scale = before_conv_channel
+        # after_conv_channel / shrink_scale = output_channel
+        before_conv_channel = assert_to_integer(
+            self.input_channel * prod(reciprocal(expand_scale))
+        )
+        after_conv_channel = assert_to_integer(
+            self.output_channel * prod(reciprocal(shrink_scale))
+        )
+        return nn.Sequential(
+            RearrangePool(input_channel=self.input_channel, pool=expand_scale),
+            ConvBlock(
+                input_channel=before_conv_channel,
+                output_channel=after_conv_channel,
+                kernel_size=1,
+                dim=self.dim,
+            ),
+            RearrangePool(input_channel=after_conv_channel, pool_scale=shrink_scale),
+        )
+
+    def _forward(self, x):
+        return self.module(x)
 
 
 class MaskGenerator(nn.Module):
     def __init__(
         self,
-        mask_size: tuple[int, int, int],
+        mask_scale: Fraction | tuple[Fraction, ...],
         mask_ratio: float,
+        *,
+        dim: int,
     ):
         super().__init__()
-        self.mask_size = mask_size
+        self.dim = dim
+        self.mask_scale = to_fraction(mask_scale)
+        self.mask_scale = repeat(mask_scale, dim, types=Fraction)
         self.mask_ratio = mask_ratio
 
     @torch.no_grad()
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        sh = x.shape
-        assert len(sh) == 5
-        scales = assert_divisible(size_of_tensor(x), self.mask_size)
-        msh = (sh[0], 1, *scales)
+        b, c, *s = x.shape
+        assert len(s) == self.dim
+        msh = (b, 1, assert_to_integer(reciprocal(self.mask_scale)))
         mask = torch.rand(msh, device=x.device) < self.mask_ratio
-        mask = F.interpolate(mask.float(), sh[2:], mode="nearest")
+        mask = F.interpolate(mask.float(), s, mode="nearest")
         return mask
 
 
 class RevertResolutionHead(UNetHead):
     """A head which output size is as same as unet patch size."""
 
+    def __init__(
+        self, input_channel, output_channel, pool_scale: Fraction, *, dim: int
+    ):
+        self.dim = dim
+        self.output_channel = output_channel
+        self.pool_scale = pool_scale
+        self.pool_scale = repeat(self.pool_scale, self.dim, types=Fraction)
+        super().__init__(input_channel)
+
     @classmethod
     def attach_to_unet(
-        cls, unet: PlainUNet, initial_scale: int = 1, shrink=False
-    ) -> UNet:
+        cls,
+        unet: PlainUNet,
+        output_scale: Fraction | tuple[Fraction, ...] = Fraction(
+            1,
+        ),
+        *args,
+        **kwargs,
+    ) -> PlainUNet:
         """attach myself to unet
 
         Parameters
         ----------
         unet : PlainUNet
             UNet object
-        initial_scale : int, optional
-            the target scale compared to unet output size, if you want to shrink it, check shrink argument, by default 1
-        shrink : bool, optional
-            whether to shrink, by default False
+
+        output_scale : Fraction
 
         Returns
         -------
         UNet
             attached UNet
         """
+        output_scale = repeat(output_scale, unet.dim, types=Fraction)
         if not unet.deep_supervision:
             head = cls(
+                *args,
                 input_channel=unet.skip_channels[0],
                 output_channel=unet.output_channel,
-                scale=initial_scale,
-                shrink=shrink,
+                pool_scalescale=output_scale,
+                dim=unet.dim,
+                **kwargs,
             )
             unet.decoder.head = head
             return unet
-        
-        def _is_shrink(i, j):
-            """if it is shrinking from i to j"""
-            if all(elementwise_le(i, j)):
-                return False # expanding
-            if all(elementwise_gt(i, j)):
-                return True # shrinking
-            raise NotImplementedError("some elements is shrinking and some elements is expanding.")
 
-        former = 1
-        scales_to_output = [former]
-        for scale in unet.pool_strides:
-            former = elementwise_mul(former, scale)
-            scales_to_output.append(former)
-        
-        scales_to_initial_scale = []
-        for scale in scales_to_output:
-            if _is_shrink(scale, initial_scale):
-                scales_to_initial_scale.append((assert_divisible(scale, initial_scale), True))
-            else:
-                scales_to_initial_scale.append((assert_divisible(initial_scale, scale), False))
+        head_scales = [output_scale]
+        for scale in unet.decoder_pool_scales:
+            output_scale = elementwise_mul(output_scale, scale)
+            head_scales.append(output_scale)
 
-        heads = []
-        for i in range(unet.n_stages + 1):
-            input_channel = unet.skip_channels[i]
-            output_channel = unet.output_channel
-            scale, shrink = scales_to_initial_scale[i]
-            heads.append(cls(input_channel=input_channel, output_channel=output_channel, scale=scale, shrink=shrink))
-
-        heads = nn.ModuleList(heads)
+        heads = nn.ModuleList(
+            tuple(
+                cls(
+                    *args,
+                    input_channel=input_channel,
+                    output_channel=unet.output_channel,
+                    pool_scale=scale,
+                    **kwargs,
+                )
+                for input_channel, scale in zip(
+                    unet.skip_channels, head_scales, strict=True
+                )
+            )
+        )
         unet.decoder.head = heads
         return unet
+
 
 class PixelShuffleHead(RevertResolutionHead):
     """PixelShuffleHeadは入力特徴マップに対してピクセルシャッフルを行うことによって期待する解像度, チャネル数に戻すヘッドである"""
 
     def __init__(
-        self, input_channel, output_channel, scales, *, shrink=False, dim: int
+        self,
+        input_channel,
+        output_channel,
+        scale: Fraction | tuple[Fraction, ...],
+        *,
+        dim: int,
+        conv_position: float = 1.0,
     ):
         self.output_channel = output_channel
-        self.scale = scales
-        self.shrink = shrink
         self.dim = dim
-        super().__init__(input_channel)
-        ps = pixelshuffle(self.dim, *scales, shrink=self.shrink)
-        self.ps = (
-            nn.Sequential(
-                ConvBlock(
-                    input_channel, output_channel * prod(scales), kernel_size=1, dim=dim
-                ),
-                ps,
-            )
-            if self.shrink
-            else nn.Sequential(
-                ps,
-                ConvBlock(
-                    assert_divisible(self.input_channel, prod(scales)),
-                    output_channel,
-                    kernel_size=1,
-                    dim=dim,
-                ),
-            )
+        self.conv_position = conv_position
+        super().__init__(input_channel, output_channel, pool_scale=scale)
+        self.module = PixelShufflePool(
+            input_channel=self.input_channel,
+            output_channel=self.output_channel,
+            pool_scale=self.pool_scale,
+            conv_position=self.conv_position,
+            dim=self.dim,
         )
 
     def calculate_output_size(self, input_size):
-        if self.shrink:
-            return assert_divisible(input_size, self.scale)
-        else:
-            return elementwise_mul(input_size, self.scale)
+        return self.module.calculate_output_size(input_size)
 
 
 class MIMModule(L.LightningModule):
@@ -169,38 +310,46 @@ class MIMModule(L.LightningModule):
 
     def __init__(
         self,
-        unet: UNet,
+        unet: PlainUNet,
         mask_ratio: float,
         mask_gen=MaskGenerator,
-        head_fn=PixelShuffleHead.attach_to_unet,
-        mask_size: tuple[int, ...] | None = None,
+        head=PixelShuffleHead,
+        mask_scale: tuple[int, ...] | None = None,
         weights: float | tuple[float, ...] | None = None,
         loss_fn=partial(nn.L1Loss, reduction="none"),
         visible_loss_weight: float = 0.0,
+        *,
+        conv_position: float = 1.0,
     ):
         super().__init__()
         self.save_hyperparameters(ignore=["unet"])
-        self.head = head_fn
-        self.unet = head_fn.attach_to_unet(unet)
+        self.head = head
+        self.unet = head.attach_to_unet(unet, conv_position=conv_position)
         print(self.unet)
         self.deep_supervision = unet.deep_supervision
         self.mask_ratio = mask_ratio
-        self.mask_size = mask_size
+        self.scale = mask_scale
         self.weights = weights
         self.visible_loss_weight = visible_loss_weight
         self.loss = loss_fn()
 
-        if mask_size is None:
-            self.mask_size = assert_divisible(
-                self.unet.patch_size, self.unet.skip_size[-1]
+        if mask_scale is None:
+            mask_scale = repeat(
+                Fraction(
+                    1,
+                ),
+                dim=self.unet.dim,
             )
-            print("default mask size: ", self.mask_size)
-        self.mask_fn = mask_gen(self.mask_size, self.mask_ratio)
+            for scale in self.unet.encoder_pool_scales:
+                mask_scale = elementwise_mul(mask_scale, scale)
+            self.mask_scale = mask_scale
+            print("default mask scale: ", self.mask_scale)
+        self.mask_fn = mask_gen(self.mask_scale, self.mask_ratio)
         if self.deep_supervision:
             if isinstance(self.weights, tuple):
                 assert_eq(len(self.unet.decoder.head), len(self.weights))
             if self.weights is None:
-                self.weights = 2.0
+                self.weights = 0.5
             if isinstance(self.weights, float):
                 self.weights = tuple(
                     self.weights**i for i in range(self.unet.n_stages + 1)
@@ -247,6 +396,11 @@ class MIMModule(L.LightningModule):
 
     def training_step(self, batch, _):
         image = batch[image_key]  # (B,C,H,W,D)
+        mask_size = elementwise_mul(image.shape[2:], self.mask_scale)
+        if not all(is_integer(mask_size)):
+            warning(
+                f"patch shape is {image.shape}, which product with mask_scale {self.mask_scale} is not integer"
+            )
         mask = self.mask_fn(image)  # (B,C,H,W,D)
         # masked = image * (1 - mask) + self.mask_token * mask
         masked = image * (1 - mask)

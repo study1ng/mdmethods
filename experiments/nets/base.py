@@ -8,13 +8,16 @@ from experiments.utils import (
     assert_divisible,
     elementwise_mul,
     identity,
+    reciprocal,
     repeat,
     scale_shape_fn,
     channel_dim,
     size_dim,
+    to_fraction,
 )
 import experiments.config
 import torch
+from fractions import Fraction
 
 
 class Assertion(ABC):
@@ -46,18 +49,21 @@ class Assertions(Assertion):
 class AssertShape(Assertion):
     def __init__(
         self,
-        input_shape: int | tuple[int, ...] | None = None,
-        output_shape: int | tuple[int, ...] | None = None,
+        input_shape: int | tuple[int, ...] | Callable[[int]] | None = None,
+        output_shape: int | tuple[int, ...] | Callable[[int]] | None = None,
         shape_fn: (
             Callable[[int | tuple[int, ...]], int | tuple[int, ...]] | None
         ) = None,
         dim: int | slice = slice(),
     ):
-        if not (input_shape is None and output_shape is None) and shape_fn is not None:
+        if (
+            isinstance(input_shape, (int, tuple))
+            or isinstance(output_shape, (int, tuple))
+        ) and shape_fn is not None:
             warnings.warn(
                 """Either input_shape or output_shape is provided alongside shape_fn.
-                shape_fn is intended to be used when you know neither input_shape nor output_shape.
-                Try to set both input_shape and output_shape."""
+shape_fn is intended to be used when you know neither input_shape nor output_shape.
+Try to set both input_shape and output_shape."""
             )
         self.input_shape = input_shape
         self.output_shape = output_shape
@@ -67,9 +73,15 @@ class AssertShape(Assertion):
     def _assert(self, x: Tensor, y: Tensor):
         shape = x.shape[self.dim]
         if self.input_shape is not None:
-            assert_eq(self.input_shape, shape)
+            if callable(self.input_shape):
+                self.input_shape(shape)
+            else:
+                assert_eq(self.input_shape, shape)
         if self.output_shape is not None:
-            assert_eq(self.output_shape, y.shape[self.dim])
+            if callable(self.output_shape):
+                self.input_shape(shape)
+            else:
+                assert_eq(self.output_shape, y.shape[self.dim])
         if self.shape_fn is not None:
             assert_eq(self.shape_fn(shape), y.shape[self.dim])
 
@@ -78,7 +90,6 @@ class AssertShape(Assertion):
         x = args[0]
         y = args[-1]
         self._assert(x, y)
-
 
 class AssertChannel(AssertShape):
     def __init__(self, input_shape=None, output_shape=None, shape_fn=None):
@@ -173,47 +184,22 @@ class Pool(BaseUNetModule):
         self,
         input_channel: int,
         output_channel,
-        pool_stride,
+        pool_scale: Fraction | tuple[Fraction, ...],
     ):
         super().__init__()
         self.input_channel = input_channel
         self.output_channel = output_channel
-        self.pool_stride = pool_stride
+        self.pool_scale = pool_scale
         self.bound_assertion(
             AssertChannel(self.input_channel, self.output_channel),
+            AssertSize(shape_fn=scale_shape_fn(scale=self.pool_scale)),
         )
 
     def forward(self, x):
         return super().forward(x)
 
-
-class DownSampling(Pool):
-    def __init__(self, input_channel, output_channel, pool_stride):
-        super().__init__(input_channel, output_channel, pool_stride)
-        self.bound_assertion(
-            AssertSize(shape_fn=scale_shape_fn(scale=self.pool_stride, shrink=True))
-        )
-
     def calculate_output_size(self, input_size):
-        b, c, *s = input_size
-        assert_eq(self.input_channel, c)
-        s = assert_divisible(s, self.pool_stride)
-        return (b, self.output_channel, *s)
-
-
-class UpSampling(Pool):
-    def __init__(self, input_channel, output_channel, pool_stride):
-        super().__init__(input_channel, output_channel, pool_stride)
-        self.bound_assertion(
-            AssertSize(shape_fn=scale_shape_fn(scale=self.pool_stride))
-        )
-
-
-    def calculate_output_size(self, input_size):
-        b, c, *s = input_size
-        assert_eq(self.input_channel, c)
-        s = elementwise_mul(s, self.pool_stride)
-        return (b, self.output_channel, *s)
+        return elementwise_mul(input_size, self.pool_scale)
 
 
 class Stage(BaseUNetModule):
@@ -222,13 +208,13 @@ class Stage(BaseUNetModule):
         input_channel: int,
         pool_channel: int,
         output_channel: int,
-        pool_stride: int | tuple[int, ...],
+        pool_scale: Fraction | tuple[Fraction, ...],
     ):
         super().__init__()
         self.input_channel = input_channel
         self.output_channel = output_channel
         self.pool_channel = pool_channel
-        self.pool_stride = pool_stride
+        self.pool_scale = pool_scale
         self.pool = self._build_pool()
         self.pool.bound_assertion(
             AssertChannel(self.input_channel, self.pool_channel),
@@ -256,23 +242,21 @@ class Stage(BaseUNetModule):
 
 
 class EncoderStage(Stage):
-    def __init__(self, input_channel, pool_channel, output_channel, pool_stride):
-        super().__init__(input_channel, pool_channel, output_channel, pool_stride)
-        self.pool.bound_assertion(
-            AssertSize(shape_fn=scale_shape_fn(self.pool_stride, shrink=True))
-        )
-
-    @abstractmethod
-    def _build_pool(self) -> DownSampling: ...
+    pass
 
 
 class DecoderStage(Stage):
     def __init__(
-        self, input_channel, pool_channel, skip_channel, output_channel, pool_stride
+        self,
+        input_channel,
+        pool_channel,
+        skip_channel,
+        output_channel,
+        pool_scale: Fraction | tuple[Fraction, ...],
     ):
         self.skip_channel = skip_channel
-        super().__init__(input_channel, pool_channel, output_channel, pool_stride)
-        self.pool.bound_assertion(AssertSize(shape_fn=scale_shape_fn(self.pool_stride)))
+        super().__init__(input_channel, pool_channel, output_channel, pool_scale)
+        self.pool.bound_assertion(AssertSize(shape_fn=scale_shape_fn(self.pool_scale)))
 
     def _forward(self, x, skip):
         m = self.pool(x)
@@ -291,9 +275,6 @@ class DecoderStage(Stage):
         y = self.block.calculate_output_size(m)
         return y
 
-    @abstractmethod
-    def _build_pool(self) -> UpSampling: ...
-
 
 class UNetHead(BaseUNetModule):
     def __init__(self, input_channel):
@@ -308,8 +289,8 @@ class UNetHead(BaseUNetModule):
         ...
 
     @abstractmethod
-    def calculate_output_size(self, input_size):
-        ...
+    def calculate_output_size(self, input_size): ...
+
 
 class UNetStem(Block):
     pass
@@ -321,14 +302,14 @@ class UNetEncoder(BaseUNetModule):
         n_stages: int,
         input_channel: int,
         skip_channels: tuple[int, ...],  # deepest is bottleneck
-        pool_strides: tuple[tuple[int, ...], ...],  # deepest is bottleneck
+        pool_scales: tuple[tuple[Fraction, ...], ...],  # deepest is bottleneck
     ):
         super().__init__()
         self.input_channel = input_channel
         self.n_stages = n_stages
-        self.pool_strides = pool_strides
+        self.pool_scales = pool_scales
         self.skip_channels = skip_channels
-        assert_eq(self.n_stages, len(self.pool_strides))
+        assert_eq(self.n_stages, len(self.pool_scales))
         assert_eq(self.n_stages + 1, len(self.skip_channels))  # stem + stages
         self.stem_channel = self.skip_channels[0]
         self.stem = self._build_stem()
@@ -339,9 +320,7 @@ class UNetEncoder(BaseUNetModule):
             self.stages[i].bound_assertion(
                 Assertions(
                     AssertChannel(self.skip_channels[i], self.skip_channels[i + 1]),
-                    AssertSize(
-                        shape_fn=scale_shape_fn(scale=self.pool_strides[i], shrink=True)
-                    ),
+                    AssertSize(shape_fn=scale_shape_fn(scale=self.pool_scales[i])),
                 )
             )
 
@@ -382,17 +361,17 @@ class UNetDecoder(BaseUNetModule):
         self,
         n_stages: int,
         skip_channels: tuple[int, ...],  # deepest is bottleneck
-        pool_strides: tuple[tuple[int, ...]],  # deepest is bottleneck
+        pool_scales: tuple[tuple[Fraction, ...]],  # deepest is bottleneck
         *,
         deep_supervision: bool = False,
     ):
         super().__init__()
         self.n_stages = n_stages
         self.skip_channels = skip_channels
-        self.pool_strides = pool_strides
+        self.pool_scales = pool_scales
         self.deep_supervision = deep_supervision
         assert_eq(self.n_stages + 1, len(self.skip_channels))
-        assert_eq(self.n_stages, len(self.pool_strides))
+        assert_eq(self.n_stages, len(self.pool_scales))
         self.head = self._build_head()  # deepest is bottleneck
         self.stages = self._build_stages()  # deepest is bottleneck
         assert_eq(self.n_stages, len(self.stages))
@@ -400,7 +379,7 @@ class UNetDecoder(BaseUNetModule):
             self.stages[i].bound_assertion(
                 Assertions(
                     AssertChannel(self.skip_channels[i + 1], self.skip_channels[i]),
-                    AssertSize(shape_fn=scale_shape_fn(scale=self.pool_strides[i])),
+                    AssertSize(shape_fn=scale_shape_fn(scale=self.pool_scales[i])),
                 )
             )
         if self.deep_supervision:
@@ -496,9 +475,14 @@ class UNet(BaseUNetModule):
         n_stages: int,
         input_channel: int,
         skip_channels: tuple[int, ...],  # deepest is bottleneck
-        pool_strides: (
-            int | tuple[int, ...] | list[int] | list[tuple[int, ...]]
-        ) = 2,  # deepest is bottleneck,
+        decoder_pool_scales: (
+            Fraction
+            | tuple[Fraction, ...]
+            | list[Fraction]
+            | list[tuple[Fraction, ...]]
+        ) = Fraction(
+            2
+        ),  # deepest is bottleneck, for decoder
         *,
         deep_supervision: bool = False,
         dim: int,
@@ -508,8 +492,8 @@ class UNet(BaseUNetModule):
         self.input_channel = input_channel
         """len(skip_channels) == self.n_stages + 1"""
         self.skip_channels = skip_channels
-        """len(pool_strides) == self.n_stages"""
-        self.pool_strides = pool_strides
+        """len(decoder_pool_scales) == self.n_stages"""
+        self.decoder_pool_scales = decoder_pool_scales
         self.deep_supervision = deep_supervision
         self.dim = dim
 
@@ -517,17 +501,31 @@ class UNet(BaseUNetModule):
 
         assert_eq(self.n_stages + 1, len(self.skip_channels))
 
-        if isinstance(self.pool_strides, int):
-            self.pool_strides = repeat(self.pool_strides, self.dim)
-        if isinstance(self.pool_strides, tuple):
-            self.pool_strides = repeat(self.pool_strides, self.n_stages, wrap_type=list)
-        elif isinstance(self.pool_strides, list) and isinstance(
-            self.pool_strides[0], int
+        if isinstance(self.decoder_pool_scales, (int, Fraction)):
+            self.decoder_pool_scales = repeat(
+                to_fraction(self.decoder_pool_scales), self.dim
+            )
+        if isinstance(self.decoder_pool_scales, tuple):
+            self.decoder_pool_scales = repeat(
+                to_fraction(self.decoder_pool_scales), self.n_stages, wrap_type=list
+            )
+        elif isinstance(self.decoder_pool_scales, list) and isinstance(
+            self.decoder_pool_scales[0], (int, Fraction)
         ):
-            self.pool_strides = [repeat(ps, self.dim) for ps in self.pool_strides]
+            self.decoder_pool_scales = [
+                repeat(to_fraction(ps), self.dim) for ps in self.decoder_pool_scales
+            ]
 
-        assert_eq(self.n_stages, len(self.pool_strides))
-        self.pool_strides = tuple(self.pool_strides)
+        if isinstance(self.decoder_pool_scales, list):
+            self.decoder_pool_scales = [
+                to_fraction(i) for i in self.decoder_pool_scales
+            ]
+
+        assert_eq(self.n_stages, len(self.decoder_pool_scales))
+        self.decoder_pool_scales = tuple(self.decoder_pool_scales)
+        self.encoder_pool_scales = tuple(
+            reciprocal(i) for i in self.decoder_pool_scales
+        )
 
         self.encoder = self._build_encoder()
         self.encoder.bound_assertion(
@@ -570,7 +568,7 @@ class UNet(BaseUNetModule):
             "n_stages": plan.n_stages,
             "input_channel": input_channel,
             "skip_channels": skip_channels,
-            "pool_strides": plan.pool_strides,
+            "decoder_pool_scales": plan.pool_strides,
             "dim": plan.dim,
             "deep_supervision": deep_supervision,
         }

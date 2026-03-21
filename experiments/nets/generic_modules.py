@@ -1,13 +1,10 @@
+from fractions import Fraction
 from typing import Callable
 
-from experiments.nets.base import (
-    Block,
-    DownSampling,
-    UpSampling,
-)
+from experiments.nets.base import Block, Pool
 from torch import nn, Tensor
 
-from experiments.utils import element_wise
+from experiments.utils import assert_to_integer, element_wise, reciprocal
 import torch.nn.functional as F
 
 
@@ -139,7 +136,7 @@ class ConvBlock(Block):
                 raise ValueError(f"dim {dim} should be 1~3")
 
 
-class StridedConv(DownSampling):
+class StridedConv(Pool):
     conv = ConvBlock.conv
 
     def __init__(
@@ -147,14 +144,20 @@ class StridedConv(DownSampling):
         input_channel,
         output_channel,
         kernel_size: int | tuple[int, ...] = 3,
-        pool_stride: int | tuple[int, ...] = 2,
+        pool_scale: Fraction | tuple[Fraction, ...] = Fraction(2),
         *,
         dim: int,
     ):
         assert dim is not None or isinstance(kernel_size, tuple), "dim is ambiguous"
         self.dim = dim if dim is not None else len(kernel_size)
         self.kernel_size = kernel_size
-        super().__init__(input_channel, output_channel, pool_stride)
+        super().__init__(input_channel, output_channel, self.pool_scale)
+
+        try:
+            self.pool_stride = assert_to_integer(reciprocal(pool_scale))
+        except AssertionError:
+            raise AssertionError(f"Strided Conv only accepts reciprocal of integer")
+        
         self.module = self.conv(self.dim)(
             self.input_channel,
             self.output_channel,
@@ -185,21 +188,25 @@ class StridedConv(DownSampling):
         return kernel_size // 2
 
 
-class InterpolateUpSample(UpSampling):
+class InterpolateUpSample(Pool):
     """up sampling function"""
 
     def __init__(
         self,
         input_channel,
         output_channel,
-        pool_stride: int | tuple[int, ...] = 2,
+        pool_scale: Fraction | tuple[Fraction, ...] = Fraction(2),
         *,
         dim: int = 3,
         mode="nearest",
     ):
         self.dim = dim
         self.mode = mode
-        super().__init__(input_channel, output_channel, pool_stride)
+        super().__init__(input_channel, output_channel, pool_scale)
+        try:
+            self.pool_stride = assert_to_integer(pool_scale)
+        except AssertionError:
+            raise AssertionError("Interpolate Up Sample only accepts integer pool scale")
         self.module = self.conv(input_channel, output_channel, 1, dim=self.dim)
 
     def _forward(self, x):

@@ -1,3 +1,4 @@
+from fractions import Fraction
 from sys import maxsize
 
 from experiments.nets.base import Block
@@ -69,7 +70,7 @@ class MEncoderStage(PlainEncoderStage):
         pool_channel,
         output_channel,
         kernel_size,
-        pool_stride,
+        pool_scale,
         n_blocks=3,
         d_state=16,
         d_conv=4,
@@ -87,7 +88,7 @@ class MEncoderStage(PlainEncoderStage):
             pool_channel,
             output_channel,
             kernel_size,
-            pool_stride,
+            pool_scale,
             n_blocks=n_blocks - 1,
             dim=self.dim,
         )
@@ -113,7 +114,7 @@ class MEncoder(PlainEncoder):
         n_stages,
         input_channel,
         skip_channels,
-        pool_strides,
+        pool_scales,
         kernel_size: tuple[tuple[int, ...], ...],
         *,
         dim: int,
@@ -128,7 +129,7 @@ class MEncoder(PlainEncoder):
             n_stages=n_stages,
             input_channel=input_channel,
             skip_channels=skip_channels,
-            pool_strides=pool_strides,
+            pool_scale=pool_scales,
             kernel_size=kernel_size,
             dim=dim,
         )
@@ -141,7 +142,7 @@ class MEncoder(PlainEncoder):
                     self.skip_channels[i],
                     self.skip_channels[i + 1],
                     self.skip_channels[i + 1],
-                    pool_stride=self.pool_strides[i],
+                    pool_scale=self.pool_scales[i],
                     kernel_size=self.kernel_size[i + 1],
                     d_state=self.d_state,
                     d_conv=self.d_conv,
@@ -159,7 +160,7 @@ class UBiMamba(PlainUNet):
         input_channel,
         skip_channels,
         output_channel,
-        pool_strides=2,
+        decoder_pool_scales=Fraction(2),
         kernel_size=3,
         *,
         deep_supervision=False,
@@ -177,7 +178,7 @@ class UBiMamba(PlainUNet):
             input_channel,
             skip_channels,
             output_channel,
-            pool_strides,
+            decoder_pool_scales,
             kernel_size,
             deep_supervision=deep_supervision,
             dim=dim,
@@ -189,7 +190,7 @@ class UBiMamba(PlainUNet):
             n_stages=self.n_stages,
             input_channel=self.input_channel,
             skip_channels=self.skip_channels,
-            pool_strides=self.pool_strides,
+            pool_scales=self.encoder_pool_scales,
             kernel_size=self.kernel_size,
             dim=self.dim,
             d_state=self.d_state,

@@ -1,3 +1,4 @@
+from fractions import Fraction
 from sys import maxsize
 from typing import Callable
 
@@ -10,7 +11,7 @@ from experiments.nets.base import (
     UNetEncoder,
     UNetDecoder,
     UNet,
-    DownSampling,
+    Pool,
 )
 from experiments.nets.generic_modules import (
     ConvBlock,
@@ -78,27 +79,27 @@ class PlainResBlock(Block):
         return self.act2(res + y)
 
 
-class PlainStridedConv(DownSampling):
+class PlainStridedConv(Pool):
     """Down sampling function"""
 
     def __init__(
         self,
         input_channel,
         output_channel,
-        pool_stride: int | tuple[int, ...] = 2,
+        pool_scale: Fraction | tuple[Fraction, ...] = Fraction(1, 2),
         *,
         dim: int,
         kernel_size: int | tuple[int, ...] = 3,
     ):
-        assert dim is not None
         self.dim = dim
         self.kernel_size = kernel_size
-        super().__init__(input_channel, output_channel, pool_stride)
-        self.conv1 = self.strided_conv(
+        super().__init__(input_channel, output_channel, pool_scale)
+
+        self.conv1 = self.pool(
             self.input_channel,
             self.output_channel,
             kernel_size=self.kernel_size,
-            pool_stride=self.pool_stride,
+            pool_scale=self.pool_scale,
             dim=self.dim,
         )
         self.conv2 = self.conv(
@@ -107,11 +108,11 @@ class PlainStridedConv(DownSampling):
             kernel_size=self.kernel_size,
             dim=self.dim,
         )
-        self.resconv = self.strided_conv(
+        self.resconv = self.pool(
             self.input_channel,
             self.output_channel,
             kernel_size=1,
-            pool_stride=self.pool_stride,
+            pool_scale=self.pool_scale,
             dim=self.dim,
         )
         self.norm1 = self.norm(self.output_channel, dim=self.dim)
@@ -128,7 +129,7 @@ class PlainStridedConv(DownSampling):
         return ConvBlock
 
     @property
-    def strided_conv(self):
+    def pool(self):
         return StridedConv
 
     @property
@@ -150,7 +151,7 @@ class PlainEncoderStage(EncoderStage):
         pool_channel,
         output_channel,
         kernel_size: int | tuple[int, ...] = 3,
-        pool_stride: int | tuple[int, ...] = 2,
+        pool_scale: Fraction | tuple[Fraction, ...] = Fraction(1,2),
         n_blocks: int = 3,
         *,
         dim: int,
@@ -162,7 +163,7 @@ class PlainEncoderStage(EncoderStage):
             input_channel,
             pool_channel,
             output_channel,
-            pool_stride=pool_stride,
+            pool_scale=pool_scale,
         )
 
     def _build_block(self):
@@ -180,7 +181,7 @@ class PlainEncoderStage(EncoderStage):
             self.input_channel,
             self.pool_channel,
             kernel_size=self.kernel_size,
-            pool_stride=self.pool_stride,
+            pool_scale=self.pool_scale,
             dim=self.dim,
         )
 
@@ -194,7 +195,7 @@ class PlainDecoderStage(DecoderStage):
         pool_channel,
         skip_channel,
         output_channel,
-        pool_stride: int | tuple[int, ...] = 2,
+        pool_scale: Fraction | tuple[Fraction, ...] = Fraction(2),
         kernel_size: int | tuple[int, ...] = 3,
         n_blocks: int = 3,
         *,
@@ -208,7 +209,7 @@ class PlainDecoderStage(DecoderStage):
             pool_channel,
             skip_channel,
             output_channel,
-            pool_stride=pool_stride,
+            pool_scale=pool_scale,
         )
 
     def _build_block(self):
@@ -225,7 +226,7 @@ class PlainDecoderStage(DecoderStage):
         return InterpolateUpSample(
             self.input_channel,
             self.pool_channel,
-            pool_stride=self.pool_stride,
+            pool_scale=self.pool_scale,
             dim=self.dim,
         )
 
@@ -293,14 +294,14 @@ class PlainEncoder(UNetEncoder):
         n_stages,
         input_channel,
         skip_channels,
-        pool_strides,
+        pool_scale,
         kernel_size: tuple[tuple[int, ...], ...],
         *,
         dim: int,
     ):
         self.kernel_size = kernel_size
         self.dim = dim
-        super().__init__(n_stages, input_channel, skip_channels, pool_strides)
+        super().__init__(n_stages, input_channel, skip_channels, pool_scale)
 
     def _build_stem(self):
         return PlainStem(
@@ -320,7 +321,7 @@ class PlainEncoder(UNetEncoder):
                     self.skip_channels[i],
                     self.skip_channels[i + 1],
                     self.skip_channels[i + 1],
-                    pool_stride=self.pool_strides[i],
+                    pool_scale=self.pool_scales[i],
                     kernel_size=self.kernel_size[i + 1],
                     dim=self.dim,
                 )
@@ -336,7 +337,7 @@ class PlainDecoder(UNetDecoder):
         n_stages,
         skip_channels,
         output_channel,
-        pool_strides,
+        pool_scale,
         kernel_size: tuple[tuple[int, ...], ...],
         *,
         deep_supervision=False,
@@ -346,7 +347,7 @@ class PlainDecoder(UNetDecoder):
         self.dim = dim
         self.output_channel = output_channel
         super().__init__(
-            n_stages, skip_channels, pool_strides, deep_supervision=deep_supervision
+            n_stages, skip_channels, pool_scale, deep_supervision=deep_supervision
         )
 
     def _build_head(self):
@@ -367,7 +368,7 @@ class PlainDecoder(UNetDecoder):
                     self.skip_channels[i],
                     self.skip_channels[i],
                     self.skip_channels[i],
-                    pool_stride=self.pool_strides[i],
+                    pool_scale=self.pool_scales[i],
                     kernel_size=self.kernel_size[i + 1],
                     dim=self.dim,
                 )
@@ -382,7 +383,7 @@ class PlainUNet(UNet):
         input_channel,
         skip_channels,
         output_channel: int,
-        pool_strides=2,
+        pool_scale=Fraction(2),
         kernel_size: int | tuple[int, ...] | list[int] | list[tuple[int, ...]] = 3,
         *,
         deep_supervision=False,
@@ -415,7 +416,7 @@ class PlainUNet(UNet):
             n_stages,
             input_channel,
             skip_channels,
-            pool_strides,
+            pool_scale,
             deep_supervision=deep_supervision,
             dim=dim,
         )
@@ -425,7 +426,7 @@ class PlainUNet(UNet):
             n_stages=self.n_stages,
             skip_channels=self.skip_channels,
             output_channel=self.output_channel,
-            pool_strides=self.pool_strides,
+            pool_scale=self.decoder_pool_scales,
             kernel_size=self.kernel_size,
             deep_supervision=self.deep_supervision,
             dim=self.dim,
@@ -436,7 +437,7 @@ class PlainUNet(UNet):
             n_stages=self.n_stages,
             input_channel=self.input_channel,
             skip_channels=self.skip_channels,
-            pool_strides=self.pool_strides,
+            pool_scale=self.encoder_pool_scales,
             kernel_size=self.kernel_size,
             dim=self.dim,
         )
