@@ -12,11 +12,13 @@ from experiments.utils import (
     assert_to_integer,
     elementwise_mul,
     get_gaussian_kernel,
-    AssertEq(),
+    AssertEq,
+)
+from experiments.utils.wraputils import (
+    element_wise2,
     reciprocal,
     repeat,
     element_wise2,
-    to_fraction,
     to_fraction_with_denominator,
 )
 import math
@@ -240,14 +242,25 @@ class HogLayer3D(nn.Module):
 
 class HogHead(RevertResolutionHead):
     def __init__(
-        self, input_channel, output_channel, pool_scale, hog_channel: int, *, dim, conv_position: ConvPosition = ConvPosition.default()
+        self,
+        input_channel,
+        output_channel,
+        pool_scale,
+        hog_channel: int,
+        *,
+        dim,
+        conv_position: ConvPosition = ConvPosition.default(),
     ):
         super().__init__(input_channel, output_channel, pool_scale, dim=dim)
         self.hog_channel = hog_channel
         self.conv_position = conv_position
         self.module = nn.Sequential(
             PixelShuffleHead(
-                self.input_channel, self.output_channel * self.hog_channel, pool_scale=self.pool_scale, dim=self.dim, conv_position=self.conv_position
+                self.input_channel,
+                self.output_channel * self.hog_channel,
+                pool_scale=self.pool_scale,
+                dim=self.dim,
+                conv_position=self.conv_position,
             ),
             einops.layers.torch.Rearrange(
                 "b (c p) h w d -> b c h w d p", p=self.hog_channel
@@ -255,8 +268,10 @@ class HogHead(RevertResolutionHead):
         )
 
     @classmethod
-    def attach_to_unet(cls, unet, hog_channel: int, output_scale, *args, **kwargs):
-        return super().attach_to_unet(
+    def _initialize_unet_head(
+        cls, unet, hog_channel: int, output_scale, *args, **kwargs
+    ):
+        return super()._initialize_unet_head(
             unet=unet,
             output_scale=output_scale,
             *args,
@@ -267,7 +282,7 @@ class HogHead(RevertResolutionHead):
     def _forward(self, x):
         return self.module(x)
 
-    def calculate_output_size(self, input_size):    
+    def calculate_output_size(self, input_size):
         b, c, h, w, d = elementwise_mul(input_size, self.pool_scale)
         return (b, assert_divisible(c, self.hog_channel), h, w, d, self.hog_channel)
 
@@ -335,13 +350,15 @@ class MaskFeatModule(L.LightningModule):
             gaussian_window_size=self.gaussian_window_size,
             signed=self.signed,
         )
-        self.unet = HogHead.attach_to_unet(
+        self.unet = HogHead.initialize_unet_head(
             unet,
             hog_channel=self.hog.bin_count,
-            output_scale= repeat(
-                to_fraction_with_denominator(1, self.cell_size), dim=self.unet.dim, types=Fraction
+            output_scale=repeat(
+                to_fraction_with_denominator(1, self.cell_size),
+                dim=self.unet.dim,
+                types=Fraction,
             ),
-            conv_position=conv_position
+            conv_position=conv_position,
         )
         print(self.unet)
 
@@ -399,7 +416,9 @@ class MaskFeatModule(L.LightningModule):
         image = batch[image_key]
         if self.global_step == 1:
             print("input shape:", {image.shape})
-            pprint("expected output shape", self.unet.calculate_output_size(image.shape))
+            pprint(
+                "expected output shape", self.unet.calculate_output_size(image.shape)
+            )
         hog = self.hog(image)  # (B,C,H',W',D',bins)
         mask = self.mask_fn(image)  # (B,1,H,W,D)
         masked = image * (1 - mask)

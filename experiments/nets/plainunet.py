@@ -275,7 +275,7 @@ class PlainHead(UNetHead):
         return self.conv(x)
 
     @classmethod
-    def attach_to_unet(cls, unet: "PlainUNet"):
+    def _initialize_unet_head(cls, unet: "PlainUNet"):
         if unet.deep_supervision:
             unet.decoder.head = nn.ModuleList(
                 PlainHead(skip_channel, unet.output_channel, dim=unet.dim)

@@ -190,9 +190,16 @@ class UNetHead(BaseUNetModule):
 
     @classmethod
     @abstractmethod
-    def attach_to_unet(cls, unet: "UNet", *args, **kwargs):
+    def _initialize_unet_head(cls, unet: "UNet", *args, **kwargs):
         """Dynamically change UNet head."""
         ...
+
+    @classmethod
+    def initialize_unet_head(cls, unet: "UNet", *args, **kwargs):
+        ret = cls._initialize_unet_head(unet, *args, **kwargs)
+        ret.hparams._headname = f"{cls.__module__}.{cls.__name__}"
+        ret.hparams._headparams = (args, kwargs)
+        return ret
 
     @abstractmethod
     def calculate_output_size(self, input_size): ...
@@ -394,7 +401,6 @@ class UNet(BaseUNetModule):
         dim: int,
     ):
         super().__init__()
-        self.save_hyperparameters(_classname=self.__class__.__name__)
         self.n_stages = n_stages
         self.input_channel = input_channel
         """len(skip_channels) == self.n_stages + 1"""
@@ -442,6 +448,9 @@ class UNet(BaseUNetModule):
             AssertChannel(input_channel),
         )
         self.decoder = self._build_decoder()
+        self.save_hyperparameters(
+            {"_unetname": f"{type(self).__module__}.{type(self).__name__}"}
+        )
 
     @abstractmethod
     def _build_encoder(self) -> UNetEncoder: ...
@@ -503,18 +512,3 @@ class UNet(BaseUNetModule):
                 **kwargs,
             )
         )
-
-    def save_hyperparameters(self):
-        import inspect
-
-        frame = inspect.currentframe().f_back
-        args = inspect.getargvalues(frame).locals
-        if frame.f_code.co_name != "__init__":
-            warnings.warn(
-                f"save_hyperparameters is expected to called at __init__ but was called at {frame.f_code.co_name}"
-            )
-            self._hyperparameters = None
-            return
-        self._hyperparameters = args
-        args.pop("self", None)
-        args.pop("__class__", None)

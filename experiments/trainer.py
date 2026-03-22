@@ -1,12 +1,146 @@
-from gc import callbacks
-
 from lightning import LightningDataModule, LightningModule, Trainer
-
 from experiments import ArgumentAdaptor
 from abc import abstractmethod
 from experiments.config import default_training_config
 from experiments.plan import Plan
 from experiments.utils import nowstring, resolved_path
+import importlib
+import warnings
+import lightning as L
+from pathlib import Path
+from experiments.nets.base import UNet
+import torch
+
+
+
+class UNetTrainingModule(L.LightningModule):
+    def __init__(self, unet: UNet):
+        super().__init__()
+        self.unet = unet
+        self.save_hyperparameters(ignore=["unet"])
+        if hasattr(unet, "hparams"):
+            self.save_hyperparameters({"unet_hparams": dict(unet.hparams)})
+
+    @classmethod
+    def load_from_pretrained(
+        cls,
+        checkpoint_path: Path | str,
+        *,
+        unet: UNet | None = None,
+        head_class: type | None = None,
+        head_params: dict | None = None,
+        **kwargs,
+    ) -> "UNetTrainingModule":
+        """load from pretrained checkpoint
+
+        Parameters
+        ----------
+        ckpth : Path | str
+            checkpoint path
+
+        unet : UNet
+            a unet, if assigned, it will be used for loading state dict
+
+        head_class : type
+            a head class, need to inherit UNetHead
+            use if you need to change the default head
+
+        **kwargs : Any
+            the arguments for cls.__init__
+        Returns
+        -------
+        UNetTrainingModule
+            loaded Module
+        """
+        head_params = {} if head_params is None else head_params
+        checkpoint = torch.load(checkpoint_path, map_location="cpu")
+        hparams = checkpoint.get("hyper_parameters")
+        if unet is None:  # unetがないならunet hparamsがなければならない
+            assert (
+                hparams is not None
+            ), "unet was not assigned and no hyper parameters was saved"
+            unet_hparams = hparams.get("unet_hparams")
+            assert (
+                unet_hparams is not None
+            ), "unet was not assigned and no unet hparams was saved"
+            unet_name = unet_hparams.get("_unetname")
+            if not unet_name:
+                raise ValueError(
+                    "due to unet was not assigned, we tried to load unet from hyperparameters but no unet name there"
+                )
+            unet_module, unet_clsname = unet_name.rsplit(".", 1)
+            try:
+                unet_cls = getattr(importlib.import_module(unet_module), unet_clsname)
+            except Exception as e:
+                raise ValueError(
+                    f"due to unet was not assigned, we tried to load unet from hyperparameters. \
+                      it gave us {unet_name} but we could not found unet there cuz {e}"
+                )
+            unet_args = {k: v for k, v in unet_hparams.items() if not k.startswith("_")}
+            unet = unet_cls(**unet_args)
+
+        if head_class is None:
+            head_class = type(unet.decoder.head)
+
+        state_dict = checkpoint.get("state_dict", {})
+        unet_state_dict = {
+            k.removeprefix("unet.", ""): v
+            for k, v in state_dict.items()
+            if k.startswith("unet.")
+        }
+
+        def _get_pretrained_head_and_params():
+            if hparams is None:
+                warnings.warn("no hyperparameters was saved")
+                return None
+            unet_hparams = hparams.get("unet_hparams")
+            if unet_hparams is None:
+                warnings.warn("no unet hparams was found")
+                return None
+            args = unet_hparams.get("_headparams")
+            if args is None:
+                print(
+                    f"no head params found in checkpoint so we'll treat it as no arguments"
+                )
+                args = ((), {})
+            return unet_hparams.get("_headname"), args
+
+        pretrained_head, args = _get_pretrained_head_and_params()
+        if pretrained_head is None:
+            warnings.warn(
+                f"due to we could not found head name from checkpoint, we'll use the default head {type(unet.decoder.head)}"
+            )
+            pretrained_head_class = None
+        else:
+            head_module, head_clsname = pretrained_head.rsplit(".", 1)
+            try:
+                pretrained_head_class: type = getattr(
+                    importlib.import_module(head_module), head_clsname
+                )
+                pretrained_headargs, pretrained_headkwargs = args
+            except Exception as e:
+                warnings.warn(
+                    f"we could not load {head_module}.{head_clsname} due to {e}"
+                )
+                pretrained_head_class = None
+
+        print(
+            f"we'll use unet class {type(unet).__name__}, head class {pretrained_head_class.__name__ if pretrained_head_class is not None else type(unet.decoder.head).__name__}"
+        )
+
+        if pretrained_head_class is None:
+            warnings.warn(
+                "no pretrained head was found so we'll try to use unstrict load_state_dict"
+            )
+            unet.load_state_dict(unet_state_dict, strict=False)
+        else:
+            unet = pretrained_head_class.attach_to_unet(
+                unet, *pretrained_headargs, **pretrained_headkwargs
+            )
+            unet.load_state_dict(unet_state_dict, strict=True)
+
+        unet = head_class.attach_to_unet(unet, **head_params)
+        return cls(unet, **kwargs)
 
 
 class Experiment(ArgumentAdaptor):

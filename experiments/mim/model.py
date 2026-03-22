@@ -236,7 +236,7 @@ class RevertResolutionHead(UNetHead):
         super().__init__(input_channel)
 
     @classmethod
-    def attach_to_unet(
+    def _initialize_unet_head(
         cls,
         unet: PlainUNet,
         output_scale: Fraction | tuple[Fraction, ...] = Fraction(
@@ -347,7 +347,7 @@ class MIMModule(L.LightningModule):
         if hasattr(unet, "hparams"):
             self.save_hyperparameters({"unet_hparams": dict(unet.hparams)})
         self.head = head
-        self.unet = head.attach_to_unet(unet, conv_position=conv_position)
+        self.unet = head.initialize_unet_head(unet, conv_position=conv_position)
         print(self.unet)
         self.deep_supervision = unet.deep_supervision
         self.mask_ratio = mask_ratio
