@@ -1,5 +1,4 @@
 from abc import ABC, abstractmethod
-import warnings
 from lightning import LightningModule
 from torch import Tensor, nn
 from experiments.plan import Plan
@@ -190,13 +189,13 @@ class UNetHead(BaseUNetModule):
 
     @classmethod
     @abstractmethod
-    def _initialize_unet_head(cls, unet: "UNet", *args, **kwargs):
+    def _reinitialize_unet(cls, unet: "UNet", *args, **kwargs):
         """Dynamically change UNet head."""
         ...
 
     @classmethod
-    def initialize_unet_head(cls, unet: "UNet", *args, **kwargs):
-        ret = cls._initialize_unet_head(unet, *args, **kwargs)
+    def reinitialize_unet(cls, unet: "UNet", *args, **kwargs):
+        ret = cls._reinitialize_unet(unet, *args, **kwargs)
         ret.hparams._headname = f"{cls.__module__}.{cls.__name__}"
         ret.hparams._headparams = (args, kwargs)
         return ret

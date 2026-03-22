@@ -7,6 +7,7 @@ import einops.layers.torch
 from torch import Tensor, nn, tensor
 import torch
 from experiments.nets.plainunet import PlainUNet
+from experiments.trainer import UNetTrainingModule
 from experiments.utils import (
     assert_divisible,
     assert_to_integer,
@@ -268,10 +269,10 @@ class HogHead(RevertResolutionHead):
         )
 
     @classmethod
-    def _initialize_unet_head(
+    def _reinitialize_unet(
         cls, unet, hog_channel: int, output_scale, *args, **kwargs
     ):
-        return super()._initialize_unet_head(
+        return super()._reinitialize_unet(
             unet=unet,
             output_scale=output_scale,
             *args,
@@ -287,7 +288,7 @@ class HogHead(RevertResolutionHead):
         return (b, assert_divisible(c, self.hog_channel), h, w, d, self.hog_channel)
 
 
-class MaskFeatModule(L.LightningModule):
+class MaskFeatModule(UNetTrainingModule):
     def __init__(
         self,
         unet: PlainUNet,
@@ -303,11 +304,10 @@ class MaskFeatModule(L.LightningModule):
         gaussian_window_size: tuple[int, int, int] | int | None = None,
         signed: bool = True,
     ):
+        super().__init__(unet=unet)
         self.cell_size = cell_size
         self.gaussian_window_size = gaussian_window_size
         self.signed = signed
-        super().__init__()
-        self.save_hyperparameters(ignore=["unet"])
         self.conv_position = conv_position
         self.deep_supervision = unet.deep_supervision
         self.mask_ratio = mask_ratio
@@ -350,7 +350,7 @@ class MaskFeatModule(L.LightningModule):
             gaussian_window_size=self.gaussian_window_size,
             signed=self.signed,
         )
-        self.unet = HogHead.initialize_unet_head(
+        self.unet = HogHead.reinitialize_unet(
             unet,
             hog_channel=self.hog.bin_count,
             output_scale=repeat(

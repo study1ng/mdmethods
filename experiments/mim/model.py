@@ -13,6 +13,7 @@ from experiments.config import image_key
 from experiments.nets.generic_modules import ConvBlock
 from math import prod
 from experiments.nets.plainunet import PlainUNet
+from experiments.trainer import UNetTrainingModule
 from experiments.utils.assertions import AssertEq
 from experiments.utils import (
     assert_divisible,
@@ -236,7 +237,7 @@ class RevertResolutionHead(UNetHead):
         super().__init__(input_channel)
 
     @classmethod
-    def _initialize_unet_head(
+    def _reinitialize_unet(
         cls,
         unet: PlainUNet,
         output_scale: Fraction | tuple[Fraction, ...] = Fraction(
@@ -245,7 +246,7 @@ class RevertResolutionHead(UNetHead):
         *args,
         **kwargs,
     ) -> PlainUNet:
-        """attach myself to unet
+        """Reinitialize UNet
 
         Parameters
         ----------
@@ -326,7 +327,7 @@ class PixelShuffleHead(RevertResolutionHead):
         return self.module(x)
 
 
-class MIMModule(L.LightningModule):
+class MIMModule(UNetTrainingModule):
     """A module which does Masking Image Modeling"""
 
     def __init__(
@@ -342,12 +343,9 @@ class MIMModule(L.LightningModule):
         *,
         conv_position: ConvPosition = ConvPosition.default(),
     ):
-        super().__init__()
-        self.save_hyperparameters(ignore=["unet"])
-        if hasattr(unet, "hparams"):
-            self.save_hyperparameters({"unet_hparams": dict(unet.hparams)})
+        super().__init__(unet=unet)
         self.head = head
-        self.unet = head.initialize_unet_head(unet, conv_position=conv_position)
+        self.unet = head.reinitialize_unet(unet, conv_position=conv_position)
         print(self.unet)
         self.deep_supervision = unet.deep_supervision
         self.mask_ratio = mask_ratio
