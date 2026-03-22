@@ -1,6 +1,7 @@
 from enum import Enum, auto
 from fractions import Fraction
 from logging import warning
+from pprint import pprint
 import lightning as L
 import torch, einops.layers.torch
 from torch import nn, tensor, Tensor
@@ -10,11 +11,11 @@ from experiments.nets.base import Pool, UNetHead
 import experiments.config
 from experiments.config import image_key
 from experiments.nets.generic_modules import ConvBlock
-from math import inf, prod
+from math import prod
 from experiments.nets.plainunet import PlainUNet
+from experiments.utils.assertions import AssertEq
 from experiments.utils import (
     assert_divisible,
-    assert_eq,
     assert_integer_scale,
     assert_to_integer,
     denominator,
@@ -343,6 +344,8 @@ class MIMModule(L.LightningModule):
     ):
         super().__init__()
         self.save_hyperparameters(ignore=["unet"])
+        if hasattr(unet, "hparams"):
+            self.save_hyperparameters({"unet_hparams": dict(unet.hparams)})
         self.head = head
         self.unet = head.attach_to_unet(unet, conv_position=conv_position)
         print(self.unet)
@@ -367,7 +370,7 @@ class MIMModule(L.LightningModule):
         self.mask_fn = mask_gen(self.mask_scale, self.mask_ratio, dim=self.unet.dim)
         if self.deep_supervision:
             if isinstance(self.weights, tuple):
-                assert_eq(len(self.unet.decoder.head), len(self.weights))
+                AssertEq()(len(self.unet.decoder.head), len(self.weights))
             if self.weights is None:
                 self.weights = 0.5
             if isinstance(self.weights, float):
@@ -417,6 +420,9 @@ class MIMModule(L.LightningModule):
     def training_step(self, batch, _):
         experiments.config.assertion = self.global_step < 10
         image = batch[image_key]  # (B,C,H,W,D)
+        if self.global_step == 1:
+            print("input shape:", {image.shape})
+            pprint("expected output shape", self.unet.calculate_output_size(image.shape))
         mask_size = elementwise_mul(image.shape[2:], self.mask_scale)
         if not all(is_integer(mask_size)):
             warning(

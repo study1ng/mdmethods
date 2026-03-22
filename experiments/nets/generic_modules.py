@@ -1,10 +1,11 @@
 from fractions import Fraction
 from typing import Callable
 
-from experiments.nets.base import Block, Pool
+from experiments.utils.assertions import AssertEq
+from experiments.nets.base import AssertSize, BaseUNetModule, Block, Pool
 from torch import nn, Tensor
 
-from experiments.utils import assert_to_integer, element_wise, reciprocal
+from experiments.utils import assert_to_integer, element_wise, reciprocal, repeat
 import torch.nn.functional as F
 
 
@@ -248,6 +249,32 @@ class RepeatingBlock(Block):
                 for _ in range(n_blocks - 1)
             ),
         )
+
+    def _forward(self, x):
+        return self.module(x)
+
+class GlobalAverageGap(BaseUNetModule):
+    def __init__(self, output_size: int | tuple[int, ...], *, dim: int):
+        super().__init__()
+        self.dim = dim
+        self.output_size = repeat(output_size, dim, types=int)
+        AssertEq()(self.dim, len(self.output_size))
+        self.module = self.gap(self.dim)(self.output_shape)
+        self.bound_assertion(AssertSize(output_shape=self.output_size))
+
+
+    @staticmethod
+    def gap(dim: int):
+        match dim:
+            case 1:
+                return nn.AdaptiveAvgPool1d
+            case 2:
+                return nn.AdaptiveAvgPool2d
+            case 3:
+                return nn.AdaptiveAvgPool3d            
+            case _:
+                raise ValueError(f"dim {dim} should be 1~3")
+
 
     def _forward(self, x):
         return self.module(x)

@@ -1,5 +1,6 @@
 from fractions import Fraction
 from functools import partial
+from pprint import pprint
 
 import einops.layers
 import einops.layers.torch
@@ -11,7 +12,7 @@ from experiments.utils import (
     assert_to_integer,
     elementwise_mul,
     get_gaussian_kernel,
-    assert_eq,
+    AssertEq(),
     reciprocal,
     repeat,
     element_wise2,
@@ -215,7 +216,7 @@ class HogLayer3D(nn.Module):
         tuple[int, int, int, int, int, int]
             the output hog size (B,C,H,W,D,HOG feature)
         """
-        assert_eq(5, len(input_size))
+        AssertEq()(5, len(input_size))
         b, c, h, w, d = input_size
 
         @element_wise2(int)
@@ -347,7 +348,7 @@ class MaskFeatModule(L.LightningModule):
         self.mask_fn = mask_gen(self.mask_scale, self.mask_ratio, dim=self.unet.dim)
         if self.deep_supervision:
             if isinstance(self.weights, tuple):
-                assert_eq(len(self.unet.decoder.head), len(self.weights))
+                AssertEq()(len(self.unet.decoder.head), len(self.weights))
             if self.weights is None:
                 self.weights = 0.5
             if isinstance(self.weights, float):
@@ -396,6 +397,9 @@ class MaskFeatModule(L.LightningModule):
 
     def training_step(self, batch, _):
         image = batch[image_key]
+        if self.global_step == 1:
+            print("input shape:", {image.shape})
+            pprint("expected output shape", self.unet.calculate_output_size(image.shape))
         hog = self.hog(image)  # (B,C,H',W',D',bins)
         mask = self.mask_fn(image)  # (B,1,H,W,D)
         masked = image * (1 - mask)

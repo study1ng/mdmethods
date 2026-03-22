@@ -5,9 +5,14 @@ import lightning as L
 from torch import tensor
 import copy
 
-from experiments.nets.baseunet import UNet
-from experiments.utils import assert_eq
+from experiments.nets.base import UNet, UNetHead
+from experiments.utils import AssertEq()
 from itertools import repeat
+
+class DinoHead(UNetHead):
+    def __init__(self, input_channel, output_size: int | tuple[int, ...]):
+        super().__init__(input_channel)
+
 
 Temperature = float | Iterator[float]
 
@@ -53,7 +58,7 @@ class DinoModule(L.LightningModule):
 
         if self.deep_supervision:
             if isinstance(self.weights, tuple):
-                assert_eq(len(self.unet.decoder.head), len(self.weights))
+                AssertEq()(len(self.unet.decoder.head), len(self.weights))
             if self.weights is None:
                 self.weights = 2.0
             if isinstance(self.weights, float):

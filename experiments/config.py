@@ -1,5 +1,4 @@
 from pathlib import Path
-from experiments.utils import nowstring
 
 
 image_key = "image"
@@ -53,3 +52,23 @@ def default_training_config(save_path: Path, meta, devices):
 
 
 assertion = False
+
+def filekey(filepath: Path | str) -> str:
+    """get a id of a path
+
+    Parameters
+    ----------
+    filepath : Path | str
+        the path
+
+    Returns
+    -------
+    str
+        the key
+    """
+    key = Path(filepath).name.split(".")[0].split("_")[0]
+    return key
+size_dim = slice(
+    2, None
+)
+channel_dim = 1

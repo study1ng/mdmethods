@@ -23,7 +23,8 @@ from experiments.nets.generic_modules import (
 )
 from torch import Tensor, nn
 
-from experiments.utils import assert_eq, elementwise_min, repeat
+from experiments.utils import elementwise_min, repeat
+from experiments.utils.assertions import AssertEq
 
 
 class PlainResBlock(Block):
@@ -420,7 +421,7 @@ class PlainUNet(UNet):
         ):
             self.kernel_size = [repeat(ps, self.dim) for ps in self.kernel_size]
 
-        assert_eq(n_stages + 1, len(self.kernel_size))
+        AssertEq()(n_stages + 1, len(self.kernel_size))
         self.kernel_size = tuple(self.kernel_size)
         super().__init__(
             n_stages,

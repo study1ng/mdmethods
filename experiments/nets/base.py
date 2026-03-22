@@ -1,129 +1,36 @@
 from abc import ABC, abstractmethod
-from typing import Callable
 import warnings
+from lightning import LightningModule
 from torch import Tensor, nn
 from experiments.plan import Plan
 from experiments.utils import (
-    assert_eq,
     elementwise_mul,
-    identity,
     reciprocal,
     repeat,
     scale_shape_fn,
-    channel_dim,
-    size_dim,
     to_fraction,
 )
-import experiments.config
 import torch
 from fractions import Fraction
+from experiments.utils.assertions import (
+    DumbAssertion,
+    AssertNoSizeChange,
+    AssertSize,
+    AssertChannel,
+    SeqAssertion,
+    AssertEq,
+)
 
 
-class Assertion(ABC):
-    @abstractmethod
-    def __init__(self, *args, **kwargs): ...
-
-    @abstractmethod
-    def __call__(self, *args, **kwargs): ...
-
-
-class DumbAssertion(Assertion):
-    def __init__(self):
-        pass
-
-    def __call__(self, *_, **__):
-        pass
-
-
-class Assertions(Assertion):
-    def __init__(self, *assertions):
-        self.assertions = assertions
-
-    def __call__(self, *args, **kwargs):
-        if experiments.config.assertion:
-            for assertion in self.assertions:
-                assertion(*args, **kwargs)
-
-
-class AssertShape(Assertion):
-    def __init__(
-        self,
-        input_shape: int | tuple[int, ...] | Callable[[int], None] | None = None,
-        output_shape: int | tuple[int, ...] | Callable[[int], None] | None = None,
-        shape_fn: (
-            Callable[[int | tuple[int, ...]], int | tuple[int, ...]] | None
-        ) = None,
-        dim: int | slice = slice(None),
-    ):
-        if (
-            isinstance(input_shape, (int, tuple))
-            or isinstance(output_shape, (int, tuple))
-        ) and shape_fn is not None:
-            warnings.warn(
-                """Either input_shape or output_shape is provided alongside shape_fn.
-shape_fn is intended to be used when you know neither input_shape nor output_shape.
-Try to set both input_shape and output_shape."""
-            )
-        self.input_shape = input_shape
-        self.output_shape = output_shape
-        self.shape_fn = shape_fn
-        self.dim = dim
-
-    def _assert(self, x: Tensor, y: Tensor):
-        if self.input_shape is not None:
-            if callable(self.input_shape):
-                self.input_shape(x.shape[self.dim])
-            else:
-                assert_eq(self.input_shape, x.shape[self.dim])
-        if self.output_shape is not None:
-            if callable(self.output_shape):
-                self.output_shape(y.shape[self.dim])
-            else:
-                assert_eq(self.output_shape, y.shape[self.dim])
-        if self.shape_fn is not None:
-            assert_eq(self.shape_fn(x.shape[self.dim]), y.shape[self.dim])
-
-    def __call__(self, *args: Tensor, **_):
-        assert len(args) >= 2, f"Assert Shape got {len(args)} arguments"
-        x = args[0]
-        y = args[-1]
-        self._assert(x, y)
-
-
-class AssertChannel(AssertShape):
-    def __init__(self, input_shape=None, output_shape=None, shape_fn=None):
-        super().__init__(input_shape, output_shape, shape_fn, dim=channel_dim)
-
-
-class AssertSize(AssertShape):
-    def __init__(self, input_shape=None, output_shape=None, shape_fn=None):
-        super().__init__(input_shape, output_shape, shape_fn, dim=size_dim)
-
-
-class AssertNoShapeChange(AssertShape):
-    def __init__(self, dim=slice(None)):
-        super().__init__(None, None, identity, dim=dim)
-
-
-class AssertNoChannelChange(AssertNoShapeChange):
-    def __init__(self):
-        super().__init__(dim=channel_dim)
-
-
-class AssertNoSizeChange(AssertNoShapeChange):
-    def __init__(self):
-        super().__init__(dim=size_dim)
-
-
-class BaseUNetModule(nn.Module, ABC):
+class BaseUNetModule(LightningModule, ABC):
     """A marker class for this module's classes"""
 
     def __init__(self):
         super().__init__()
         self.assertions = DumbAssertion()
 
-    def bound_assertion(self, *assertions: Assertions):
-        self.assertions = Assertions(self.assertions, *assertions)
+    def bound_assertion(self, *assertions: SeqAssertion):
+        self.assertions = SeqAssertion(self.assertions, *assertions)
 
     def forward(self, *args, **kwargs):
         y = self._forward(*args, **kwargs)
@@ -164,7 +71,7 @@ class Block(BaseUNetModule):
         self.input_channel = input_channel
         self.output_channel = output_channel
         self.bound_assertion(
-            Assertions(
+            SeqAssertion(
                 AssertNoSizeChange(),
                 AssertChannel(self.input_channel, self.output_channel),
             )
@@ -268,8 +175,8 @@ class DecoderStage(Stage):
         m = self.pool.calculate_output_size(input_size)
         b, c, *s = m
         bs, cs, *ss = skip_size
-        assert_eq(s, ss)
-        assert_eq(b, bs)
+        AssertEq()(s, ss)
+        AssertEq()(b, bs)
         m = (b, c + cs, *s)
         y = self.block.calculate_output_size(m)
         return y
@@ -308,16 +215,16 @@ class UNetEncoder(BaseUNetModule):
         self.n_stages = n_stages
         self.pool_scales = pool_scales
         self.skip_channels = skip_channels
-        assert_eq(self.n_stages, len(self.pool_scales))
-        assert_eq(self.n_stages + 1, len(self.skip_channels))  # stem + stages
+        AssertEq()(self.n_stages, len(self.pool_scales))
+        AssertEq()(self.n_stages + 1, len(self.skip_channels))  # stem + stages
         self.stem_channel = self.skip_channels[0]
         self.stem = self._build_stem()
         self.stem.bound_assertion(AssertChannel(self.input_channel, self.stem_channel))
         self.stages = self._build_stages()  # deepest is bottleneck
-        assert_eq(self.n_stages, len(self.stages))
+        AssertEq()(self.n_stages, len(self.stages))
         for i in range(self.n_stages):
             self.stages[i].bound_assertion(
-                Assertions(
+                SeqAssertion(
                     AssertChannel(self.skip_channels[i], self.skip_channels[i + 1]),
                     AssertSize(shape_fn=scale_shape_fn(scale=self.pool_scales[i])),
                 )
@@ -369,20 +276,20 @@ class UNetDecoder(BaseUNetModule):
         self.skip_channels = skip_channels
         self.pool_scales = pool_scales
         self.deep_supervision = deep_supervision
-        assert_eq(self.n_stages + 1, len(self.skip_channels))
-        assert_eq(self.n_stages, len(self.pool_scales))
+        AssertEq()(self.n_stages + 1, len(self.skip_channels))
+        AssertEq()(self.n_stages, len(self.pool_scales))
         self.head = self._build_head()  # deepest is bottleneck
         self.stages = self._build_stages()  # deepest is bottleneck
-        assert_eq(self.n_stages, len(self.stages))
+        AssertEq()(self.n_stages, len(self.stages))
         for i in range(self.n_stages):
             self.stages[i].bound_assertion(
-                Assertions(
+                SeqAssertion(
                     AssertChannel(self.skip_channels[i + 1], self.skip_channels[i]),
                     AssertSize(shape_fn=scale_shape_fn(scale=self.pool_scales[i])),
                 )
             )
         if self.deep_supervision:
-            assert_eq(self.n_stages + 1, len(self.head))
+            AssertEq()(self.n_stages + 1, len(self.head))
             for i in range(self.n_stages + 1):
                 self.head[i].bound_assertion(AssertChannel(self.skip_channels[i]))
         else:
@@ -410,7 +317,7 @@ class UNetDecoder(BaseUNetModule):
         if not self.deep_supervision then Tensor else List[Tensor]
         if List[Tensor], out[-1] is the bottleneck output
         """
-        assert_eq(
+        AssertEq()(
             self.n_stages + 1,
             len(x),
             f"decoder input starts from stem and its length must be n_stages + 1",
@@ -418,7 +325,7 @@ class UNetDecoder(BaseUNetModule):
         lo = x[-1]
         r = x[:-1][::-1]
         stages = self.stages[::-1]
-        assert_eq(
+        AssertEq()(
             len(r),
             len(stages),
             f"decoder input starts from stem and its length must be n_stages + 1",
@@ -433,12 +340,12 @@ class UNetDecoder(BaseUNetModule):
             ret = ret[0]
             h = self.head(ret)
             return h
-        assert_eq(len(self.head), len(ret))
+        AssertEq()(len(self.head), len(ret))
         ret = tuple(self.head[i](ret[i]) for i in range(len(self.head)))
         return ret  # deepest is bottleneck
 
     def calculate_output_size(self, input_size: tuple[tuple[int, ...], ...]):
-        assert_eq(
+        AssertEq()(
             self.n_stages + 1,
             len(input_size),
             f"decoder input starts from stem and its length must be n_stages + 1",
@@ -446,7 +353,7 @@ class UNetDecoder(BaseUNetModule):
         lo = input_size[-1]
         r = input_size[:-1][::-1]
         stages = self.stages[::-1]
-        assert_eq(
+        AssertEq()(
             len(r),
             len(stages),
             f"decoder input starts from stem and its length must be n_stages + 1",
@@ -461,7 +368,7 @@ class UNetDecoder(BaseUNetModule):
             ret = ret[0]
             h = self.head.calculate_output_size(ret)
             return h
-        assert_eq(len(self.head), len(ret))
+        AssertEq()(len(self.head), len(ret))
         ret = tuple(
             self.head[i].calculate_output_size(ret[i]) for i in range(len(self.head))
         )
@@ -487,6 +394,7 @@ class UNet(BaseUNetModule):
         dim: int,
     ):
         super().__init__()
+        self.save_hyperparameters(_classname=self.__class__.__name__)
         self.n_stages = n_stages
         self.input_channel = input_channel
         """len(skip_channels) == self.n_stages + 1"""
@@ -498,7 +406,7 @@ class UNet(BaseUNetModule):
 
         self.stem_channel = self.skip_channels[0]
 
-        assert_eq(self.n_stages + 1, len(self.skip_channels))
+        AssertEq()(self.n_stages + 1, len(self.skip_channels))
 
         # まずはコンテナに統一
         if isinstance(self.decoder_pool_scales, (int, Fraction)):
@@ -523,7 +431,7 @@ class UNet(BaseUNetModule):
                 to_fraction(i) for i in self.decoder_pool_scales
             ]
 
-        assert_eq(self.n_stages, len(self.decoder_pool_scales))
+        AssertEq()(self.n_stages, len(self.decoder_pool_scales))
         self.decoder_pool_scales = tuple(self.decoder_pool_scales)
         self.encoder_pool_scales = tuple(
             reciprocal(i) for i in self.decoder_pool_scales
@@ -595,3 +503,18 @@ class UNet(BaseUNetModule):
                 **kwargs,
             )
         )
+
+    def save_hyperparameters(self):
+        import inspect
+
+        frame = inspect.currentframe().f_back
+        args = inspect.getargvalues(frame).locals
+        if frame.f_code.co_name != "__init__":
+            warnings.warn(
+                f"save_hyperparameters is expected to called at __init__ but was called at {frame.f_code.co_name}"
+            )
+            self._hyperparameters = None
+            return
+        self._hyperparameters = args
+        args.pop("self", None)
+        args.pop("__class__", None)
