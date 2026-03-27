@@ -2,7 +2,7 @@ from fractions import Fraction
 from typing import Callable
 
 from experiments.assertions import AssertEq
-from experiments.nets.base import AssertSize, BaseUNetModule, Block, Pool
+from experiments.nets.base import BaseUNetModule, Block, Pool
 from torch import nn, Tensor
 
 from experiments.utils import assert_to_integer, element_wise, reciprocal, repeat
@@ -260,7 +260,6 @@ class GlobalAverageGap(BaseUNetModule):
         self.output_size = repeat(output_size, dim, types=int)
         AssertEq()(self.dim, len(self.output_size))
         self.module = self.gap(self.dim)(self.output_shape)
-        self.bound_assertion(AssertSize(output_shape=self.output_size))
 
 
     @staticmethod

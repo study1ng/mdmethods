@@ -22,7 +22,7 @@ class ZeroshotFinetuning(BaseFinetuning):
     def finetune_function(self, pl_module, epoch, optimizer):
         pass
 
-class ZeroshotMIM(PlainSegmentation):
+class ZeroshotMaskfeat(PlainSegmentation):
     def _build_trainer(self):
         config = default_training_config(
             save_path=self.save_path, meta=self.meta, devices=self.devices
@@ -41,4 +41,4 @@ class ZeroshotMIM(PlainSegmentation):
 
 
 def train(args, parsed):
-    ZeroshotMIM(args, parsed)()
+    ZeroshotMaskfeat(args, parsed)()

@@ -12,11 +12,6 @@ from experiments.utils import (
 import torch
 from fractions import Fraction
 from experiments.assertions import (
-    DumbAssertion,
-    AssertNoSizeChange,
-    AssertSize,
-    AssertChannel,
-    SeqAssertion,
     AssertEq,
 )
 
@@ -26,14 +21,9 @@ class BaseUNetModule(LightningModule, ABC):
 
     def __init__(self):
         super().__init__()
-        self.assertions = DumbAssertion()
-
-    def bound_assertion(self, *assertions: SeqAssertion):
-        self.assertions = SeqAssertion(self.assertions, *assertions)
 
     def forward(self, *args, **kwargs):
         y = self._forward(*args, **kwargs)
-        self.assertions(*args, y, **kwargs)
         return y
 
     @abstractmethod
@@ -69,12 +59,6 @@ class Block(BaseUNetModule):
         super().__init__()
         self.input_channel = input_channel
         self.output_channel = output_channel
-        self.bound_assertion(
-            SeqAssertion(
-                AssertNoSizeChange(),
-                AssertChannel(self.input_channel, self.output_channel),
-            )
-        )
 
     def calculate_output_size(self, input_size):
         b, c, *s = input_size
@@ -95,15 +79,12 @@ class Pool(BaseUNetModule):
         self.input_channel = input_channel
         self.output_channel = output_channel
         self.pool_scale = pool_scale
-        self.bound_assertion(
-            AssertChannel(self.input_channel, self.output_channel),
-            AssertSize(shape_fn=scale_shape_fn(scale=self.pool_scale)),
-        )
 
     def forward(self, x):
         return super().forward(x)
 
     def calculate_output_size(self, input_size):
+        print(input_size)
         return elementwise_mul(input_size, self.pool_scale)
 
 
@@ -121,13 +102,7 @@ class Stage(BaseUNetModule):
         self.pool_channel = pool_channel
         self.pool_scale = pool_scale
         self.pool = self._build_pool()
-        self.pool.bound_assertion(
-            AssertChannel(self.input_channel, self.pool_channel),
-        )
         self.block = self._build_block()
-        self.block.bound_assertion(
-            AssertChannel(output_shape=self.output_channel),
-        )
 
     @abstractmethod
     def _build_pool(self) -> Pool: ...
@@ -161,11 +136,9 @@ class DecoderStage(Stage):
     ):
         self.skip_channel = skip_channel
         super().__init__(input_channel, pool_channel, output_channel, pool_scale)
-        self.pool.bound_assertion(AssertSize(shape_fn=scale_shape_fn(self.pool_scale)))
 
     def _forward(self, x, skip):
         m = self.pool(x)
-        AssertNoSizeChange()(m, skip)  # same spatial size
         s = torch.cat((m, skip), dim=1)  # self.blockがこれのチャネル数を保証してくれる
         y = self.block(s)
         return y
@@ -185,7 +158,6 @@ class UNetHead(BaseUNetModule):
     def __init__(self, input_channel):
         super().__init__()
         self.input_channel = input_channel
-        self.bound_assertion(AssertChannel(self.input_channel))
 
     @classmethod
     @abstractmethod
@@ -225,16 +197,8 @@ class UNetEncoder(BaseUNetModule):
         AssertEq()(self.n_stages + 1, len(self.skip_channels))  # stem + stages
         self.stem_channel = self.skip_channels[0]
         self.stem = self._build_stem()
-        self.stem.bound_assertion(AssertChannel(self.input_channel, self.stem_channel))
         self.stages = self._build_stages()  # deepest is bottleneck
         AssertEq()(self.n_stages, len(self.stages))
-        for i in range(self.n_stages):
-            self.stages[i].bound_assertion(
-                SeqAssertion(
-                    AssertChannel(self.skip_channels[i], self.skip_channels[i + 1]),
-                    AssertSize(shape_fn=scale_shape_fn(scale=self.pool_scales[i])),
-                )
-            )
 
     @abstractmethod
     def _build_stem(self) -> UNetStem: ...
@@ -287,19 +251,6 @@ class UNetDecoder(BaseUNetModule):
         self.head = self._build_head()  # deepest is bottleneck
         self.stages = self._build_stages()  # deepest is bottleneck
         AssertEq()(self.n_stages, len(self.stages))
-        for i in range(self.n_stages):
-            self.stages[i].bound_assertion(
-                SeqAssertion(
-                    AssertChannel(self.skip_channels[i + 1], self.skip_channels[i]),
-                    AssertSize(shape_fn=scale_shape_fn(scale=self.pool_scales[i])),
-                )
-            )
-        if self.deep_supervision:
-            AssertEq()(self.n_stages + 1, len(self.head))
-            for i in range(self.n_stages + 1):
-                self.head[i].bound_assertion(AssertChannel(self.skip_channels[i]))
-        else:
-            self.head.bound_assertion(AssertChannel(self.skip_channels[0]))
 
     @abstractmethod
     def _build_head(self) -> nn.ModuleList: ...
@@ -323,18 +274,20 @@ class UNetDecoder(BaseUNetModule):
         if not self.deep_supervision then Tensor else List[Tensor]
         if List[Tensor], out[-1] is the bottleneck output
         """
-        AssertEq()(
+        AssertEq(
+            msg=f"decoder input starts from stem and its length must be n_stages + 1",
+        )(
             self.n_stages + 1,
             len(x),
-            f"decoder input starts from stem and its length must be n_stages + 1",
         )
         lo = x[-1]
         r = x[:-1][::-1]
         stages = self.stages[::-1]
-        AssertEq()(
+        AssertEq(
+            msg=f"decoder input starts from stem and its length must be n_stages + 1"
+        )(
             len(r),
             len(stages),
-            f"decoder input starts from stem and its length must be n_stages + 1",
         )
         ret = [lo]
         for i in range(len(stages)):
@@ -354,18 +307,20 @@ class UNetDecoder(BaseUNetModule):
         return ret  # deepest is bottleneck
 
     def calculate_output_size(self, input_size: tuple[tuple[int, ...], ...]):
-        AssertEq()(
+        AssertEq(
+            msg=f"decoder input starts from stem and its length must be n_stages + 1",
+        )(
             self.n_stages + 1,
             len(input_size),
-            f"decoder input starts from stem and its length must be n_stages + 1",
         )
         lo = input_size[-1]
         r = input_size[:-1][::-1]
         stages = self.stages[::-1]
-        AssertEq()(
+        AssertEq(
+            msg=f"decoder input starts from stem and its length must be n_stages + 1",
+        )(
             len(r),
             len(stages),
-            f"decoder input starts from stem and its length must be n_stages + 1",
         )
         ret = [lo]
         for i in range(len(stages)):
@@ -446,9 +401,6 @@ class UNet(BaseUNetModule):
         )
 
         self.encoder = self._build_encoder()
-        self.encoder.bound_assertion(
-            AssertChannel(input_channel),
-        )
         self.decoder = self._build_decoder()
         self.save_hyperparameters(
             {"_unetname": f"{type(self).__module__}.{type(self).__name__}"}

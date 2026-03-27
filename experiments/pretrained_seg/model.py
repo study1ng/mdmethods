@@ -85,10 +85,6 @@ class SegmentationModule(UNetTrainingModule):
         experiments.config.assertion = self.global_step < 10
         image = batch[image_key]  # (B,C,H,W,D)
         label = batch[label_key]
-        if self.global_step == 1:
-            print("input shape:", image.shape)
-            print("expected output shape: ")
-            pprint(self.unet.calculate_output_size(image.shape))
         out = self(image)
         if self.deep_supervision:
             loss = 0
@@ -108,7 +104,6 @@ class SegmentationModule(UNetTrainingModule):
     def validation_step(self, batch, _):
         image = batch[image_key]  # (B,C,H,W,D)
         label = batch[label_key]
-        print(torch.max(label))
         self.unet.deep_supervision = False
         self.unet.decoder.deep_supervision = False
         out = sliding_window_inference(
