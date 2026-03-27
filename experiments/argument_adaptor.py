@@ -32,6 +32,7 @@ class ArgumentAdaptor(ABC):
             return parser
         """
         parser = argparse.ArgumentParser()
+        parser.add_argument("-mh", "--module-help", action="help")
         return parser
 
     def parse_args(self, args: list[str]):

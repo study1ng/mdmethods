@@ -2,10 +2,12 @@ from experiments.trainer import PlannedExperiment
 from experiments.nets.ubimamba import UBiMamba as UNet
 from experiments.prune import SpacingShapeStrictPruner as Pruner
 from experiments.analyze import CTAnalyzer as Analyzer
-from experiments.plainseg.datamodule import CropSegDataModule as DataModule
-from experiments.plainseg.model import SegmentationModule as Model
+from experiments.pretrained_seg.datamodule import CropSegDataModule as DataModule
+from experiments.pretrained_seg.model import SegmentationModule as Model
 from experiments.munet.preprocess import PlannedPreprocessor as Preprocessor
 import torch
+
+from experiments.utils.fsutils import resolved_path
 
 
 def prune(args, meta):
@@ -25,20 +27,16 @@ class PlainSegmentation(PlannedExperiment):
         super().__init__(args, parsed)
         torch.set_float32_matmul_precision("medium")
 
+    def get_argument_parser(self):
+        parser = super().get_argument_parser()
+        parser.add_argument("pretrained_path", type=resolved_path, default=None)
+
     def _build_data_module(self):
         return DataModule(self.data, self.plan)
 
     def _build_module(self):
-        unet = UNet.from_plan(
-            self.plan, input_channel=1, output_channel=1, deep_supervision=True
-        )
-        lm = Model(unet, mask_ratio=0.6)
+        lm = Model(pretrained_path=self.args.pretrained_path, plan=self.plan)
         return lm
-    
-    def __call__(self):
-        return super().__call__()
-
-
 
 def train(args, meta):
     PlainSegmentation(args, meta)()

@@ -9,6 +9,7 @@ import torch.nn.functional as F
 from torch import nn
 from peft import LoraConfig, get_peft_model
 from monai.inferers import sliding_window_inference
+from monai.losses import DiceCELoss
 
 
 class SegmentationModule(UNetTrainingModule):
@@ -17,8 +18,15 @@ class SegmentationModule(UNetTrainingModule):
         *,
         unet=None,
         pretrained_path: Path | str | None = None,
-        weights,
-        loss: nn.Module,
+        weights=None,
+        loss: nn.Module = DiceCELoss(
+            include_background=False,
+            to_onehot_y=True,
+            softmax=True,
+            batch=True,
+            lambda_dice=1.0,
+            lambda_ce=1.0,
+        ),
         lora: LoraConfig | None = None,
         plan: Plan,
         **kwargs
@@ -94,13 +102,20 @@ class SegmentationModule(UNetTrainingModule):
             "out": (out[0] if self.deep_supervision else out).detach().cpu(),
         }
 
-
     def validation_step(self, batch, _):
         image = batch[image_key]  # (B,C,H,W,D)
         label = batch[label_key]
         self.unet.deep_supervision = False
         out = sliding_window_inference(
-            image, roi_size=self.plan.patch_size, sw_batch_size=len(batch), predictor=self, overlap=0.5, mode="gaussian", progress=None, device="cpu", padding_mode="replicate"
+            image,
+            roi_size=self.plan.patch_size,
+            sw_batch_size=len(batch),
+            predictor=self,
+            overlap=0.5,
+            mode="gaussian",
+            progress=None,
+            device="cpu",
+            padding_mode="replicate",
         )
         self.unet.deep_supervision = self.deep_supervision
         loss = self.loss(out, label)
