@@ -302,7 +302,7 @@ class UNetDecoder(BaseUNetModule):
             self.head.bound_assertion(AssertChannel(self.skip_channels[0]))
 
     @abstractmethod
-    def _build_head(self) -> UNetHead | nn.ModuleList: ...
+    def _build_head(self) -> nn.ModuleList: ...
 
     @abstractmethod
     def _build_stages(self) -> nn.ModuleList: ...
@@ -344,7 +344,10 @@ class UNetDecoder(BaseUNetModule):
         ret = ret[::-1]
         if not self.deep_supervision:
             ret = ret[0]
-            h = self.head(ret)
+            if isinstance(self.head, nn.ModuleList):
+                h = self.head[0](ret)
+            else:
+                h = self.head(ret)
             return h
         AssertEq()(len(self.head), len(ret))
         ret = tuple(self.head[i](ret[i]) for i in range(len(self.head)))

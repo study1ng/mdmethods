@@ -1,6 +1,6 @@
 from enum import Enum, auto
 from fractions import Fraction
-from logging import warning
+from warnings import warn
 from pprint import pprint
 import lightning as L
 import torch, einops.layers.torch
@@ -343,10 +343,10 @@ class MIMModule(UNetTrainingModule):
         *,
         conv_position: ConvPosition = ConvPosition.default(),
     ):
-        super().__init__(unet=unet)
         self.head = head
         self.unet = head.reinitialize_unet(unet, conv_position=conv_position)
-        print(self.unet)
+        print(self.unet, weights=weights)
+        super().__init__(unet=unet)
         self.deep_supervision = unet.deep_supervision
         self.mask_ratio = mask_ratio
         self.mask_scale = mask_scale
@@ -366,19 +366,6 @@ class MIMModule(UNetTrainingModule):
             self.mask_scale = mask_scale
             print("default mask scale: ", self.mask_scale)
         self.mask_fn = mask_gen(self.mask_scale, self.mask_ratio, dim=self.unet.dim)
-        if self.deep_supervision:
-            if isinstance(self.weights, tuple):
-                AssertEq()(len(self.unet.decoder.head), len(self.weights))
-            if self.weights is None:
-                self.weights = 0.5
-            if isinstance(self.weights, float):
-                self.weights = tuple(
-                    self.weights**i for i in range(self.unet.n_stages + 1)
-                )
-            self.weights = tensor(self.weights)
-            self.weights /= self.weights.sum()
-            self.register_buffer("head_weights", self.weights)
-
     def forward(self, x: Tensor):
         return self.unet(x)
 
@@ -418,13 +405,15 @@ class MIMModule(UNetTrainingModule):
     def training_step(self, batch, _):
         experiments.config.assertion = self.global_step < 10
         image = batch[image_key]  # (B,C,H,W,D)
+
         if self.global_step == 1:
-            print("input shape:", {image.shape})
-            pprint("expected output shape", self.unet.calculate_output_size(image.shape))
+            print("input shape:", image.shape)
+            print("expected output shape: ")
+            pprint(self.unet.calculate_output_size(image.shape))
         mask_size = elementwise_mul(image.shape[2:], self.mask_scale)
         if not all(is_integer(mask_size)):
-            warning(
-                f"patch shape is {image.shape}, which product with mask_scale {self.mask_scale} is not integer"
+            warn(
+                f"patch shape is {image.shape}, which product with mask_size {mask_size} is not integer"
             )
         mask = self.mask_fn(image)  # (B,C,H,W,D)
         # masked = image * (1 - mask) + self.mask_token * mask

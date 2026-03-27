@@ -1,32 +1,48 @@
-from typing import Callable, Protocol
-
-from lightning import LightningDataModule, LightningModule, Trainer
+from lightning import LightningDataModule, Trainer
 from experiments import ArgumentAdaptor
 from abc import abstractmethod
 from experiments.config import default_training_config
 from experiments.plan import Plan
 from experiments.utils import nowstring, resolved_path
+from experiments.utils.assertions import AssertEq
 import importlib
 import warnings
 import lightning as L
 from pathlib import Path
 from experiments.nets.base import UNet, UNetHead
 import torch
+from torch import tensor, Tensor
 
-class UNetReinitializer(Protocol):
-    def __call__(self, unet: UNet) -> "UNet": ...
-    
 
 class UNetTrainingModule(L.LightningModule):
-    def __init__(self, unet: UNet):
+    head_weights: Tensor
+    def __init__(self, unet: UNet, *, weights):
         super().__init__()
         self.unet = unet
-        self.save_hyperparameters(ignore=["unet", "original_head"])
+        self.deep_supervision = unet.deep_supervision
+        self.save_hyperparameters(ignore=["unet"])
         if hasattr(unet, "hparams"):
             self.save_hyperparameters({"unet_hparams": dict(unet.hparams)})
+        weights = self.initialize_weights(weights)
+        self.register_buffer("head_weights", weights)
+
+    def initialize_weights(self, w, *, default = 0.5):
+        if self.deep_supervision:
+            if isinstance(w, tuple):
+                AssertEq()(len(self.unet.decoder.head), len(w))
+            if w is None:
+                w = default
+            if isinstance(w, float):
+                w = tuple(
+                    w**i for i in range(self.unet.n_stages + 1)
+                )
+            w = tensor(w, dtype=torch.float32)
+            w /= w.sum()
+        return w
+
 
 def load_from_pretrained(
-    pretrained_unet_path: Path | str,
+    pretrained_path: Path | str,
     unet: UNet | None = None,
 ) -> tuple[UNet, UNetHead]:
     """load from pretrained checkpoint
@@ -46,7 +62,7 @@ def load_from_pretrained(
     UNetHead
         original unet head
     """
-    checkpoint = torch.load(pretrained_unet_path, map_location="cpu")
+    checkpoint = torch.load(pretrained_path, map_location="cpu")
     hparams = checkpoint.get("hyper_parameters")
     if unet is None:  # unetがないならunet hparamsがなければならない
         assert (
@@ -85,7 +101,7 @@ it gave us {unet_name} but we could not found unet there cuz {e}"
         if k.startswith("unet.")
     }
 
-    def _get_pretrained_head_and_params():
+    def _get_pretrained_head_and_params(hparams):
         if hparams is None:
             warnings.warn("no hyperparameters was saved")
             return None, None
@@ -101,7 +117,7 @@ it gave us {unet_name} but we could not found unet there cuz {e}"
             args = ((), {})
         return unet_hparams.get("_headname"), args
 
-    pretrained_head, args = _get_pretrained_head_and_params()
+    pretrained_head, args = _get_pretrained_head_and_params(hparams)
     if pretrained_head is None:
         warnings.warn(
             f"due to we could not found head name from checkpoint, we'll use the default head {type(unet.decoder.head)}"
@@ -111,17 +127,17 @@ it gave us {unet_name} but we could not found unet there cuz {e}"
         if "." in pretrained_head:
             head_module, head_clsname = pretrained_head.rsplit(".", 1)
         else:
-            raise ValueError(f"We can't specify the pretrained head loc from {pretrained_head}")
+            raise ValueError(
+                f"We can't specify the pretrained head loc from {pretrained_head}"
+            )
         try:
             pretrained_head_class: type = getattr(
                 importlib.import_module(head_module), head_clsname
             )
-            pretrained_headargs, pretrained_headkwargs = args
         except Exception as e:
-            warnings.warn(
-                f"we could not load {head_module}.{head_clsname} due to {e}"
-            )
+            warnings.warn(f"we could not load {head_module}.{head_clsname} due to {e}")
             pretrained_head_class = None
+        pretrained_headargs, pretrained_headkwargs = args
 
     print(
         f"we'll use unet class {type(unet).__name__}, head class {pretrained_head_class.__name__ if pretrained_head_class is not None else type(unet.decoder.head).__name__}"
@@ -151,7 +167,7 @@ class Experiment(ArgumentAdaptor):
         return tr
 
     @abstractmethod
-    def _build_module(self) -> LightningModule: ...
+    def _build_module(self) -> UNetTrainingModule: ...
 
     @abstractmethod
     def _build_data_module(self) -> LightningDataModule: ...
@@ -187,7 +203,7 @@ class Experiment(ArgumentAdaptor):
                     model=self.module, datamodule=self.datamodule, ckpt_path=self.ckpt
                 )
             case _:
-                raise NotImplemented(f"{self.meta.method} is not implemented")
+                raise NotImplementedError(f"{self.meta.method} is not implemented")
 
 
 class PlannedExperiment(Experiment):

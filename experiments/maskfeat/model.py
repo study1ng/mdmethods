@@ -4,7 +4,7 @@ from pprint import pprint
 
 import einops.layers
 import einops.layers.torch
-from torch import Tensor, nn, tensor
+from torch import Tensor, nn
 import torch
 from experiments.nets.plainunet import PlainUNet
 from experiments.trainer import UNetTrainingModule
@@ -33,7 +33,6 @@ from experiments.mim.model import (
 )
 from math import prod
 from experiments.config import image_key
-import lightning as L
 import torch
 import sympy
 
@@ -304,7 +303,6 @@ class MaskFeatModule(UNetTrainingModule):
         gaussian_window_size: tuple[int, int, int] | int | None = None,
         signed: bool = True,
     ):
-        super().__init__(unet=unet)
         self.cell_size = cell_size
         self.gaussian_window_size = gaussian_window_size
         self.signed = signed
@@ -314,14 +312,12 @@ class MaskFeatModule(UNetTrainingModule):
         self.mask_scale = mask_scale
         self.weights = weights
         self.visible_loss_weight = visible_loss_weight
-        self.loss = loss_fn()
-        self.unet = unet
         if mask_scale is None:
             mask_scale = repeat(
                 Fraction(
                     1,
                 ),
-                dim=self.unet.dim,
+                dim=unet.dim,
             )
             for scale in self.unet.encoder_pool_scales:
                 mask_scale = elementwise_mul(mask_scale, scale)
@@ -329,7 +325,6 @@ class MaskFeatModule(UNetTrainingModule):
             print("default mask scale: ", self.mask_scale)
         mask_size = assert_to_integer(reciprocal(self.mask_scale))
         if cell_size is None:
-
             # セルサイズはmask_sizeの約数でありかつ, できるだけ(8,8,8)に近い値を探索する.
             @element_wise2(int)
             def _find_closest_divisor(i, j):
@@ -342,39 +337,29 @@ class MaskFeatModule(UNetTrainingModule):
             self.cell_size = _find_closest_divisor(mask_size, 8)
             print("default cell size: ", self.cell_size)
 
-        self.cell_per_mask = assert_divisible(mask_size, self.cell_size)
-
-        self.hog = HogLayer3D(
+        hog = HogLayer3D(
             cell_size=self.cell_size,
             block_size=1,  # ブロックでの正規化は行わない
             gaussian_window_size=self.gaussian_window_size,
             signed=self.signed,
         )
-        self.unet = HogHead.reinitialize_unet(
+        unet = HogHead.reinitialize_unet(
             unet,
-            hog_channel=self.hog.bin_count,
+            hog_channel=hog.bin_count,
             output_scale=repeat(
                 to_fraction_with_denominator(1, self.cell_size),
-                dim=self.unet.dim,
+                dim=unet.dim,
                 types=Fraction,
             ),
             conv_position=conv_position,
         )
-        print(self.unet)
 
+        super().__init__(unet=unet, weights=weights)
+        self.cell_per_mask = assert_divisible(mask_size, self.cell_size)
+        self.loss = loss_fn()
+        self.hog = hog
         self.mask_fn = mask_gen(self.mask_scale, self.mask_ratio, dim=self.unet.dim)
-        if self.deep_supervision:
-            if isinstance(self.weights, tuple):
-                AssertEq()(len(self.unet.decoder.head), len(self.weights))
-            if self.weights is None:
-                self.weights = 0.5
-            if isinstance(self.weights, float):
-                self.weights = tuple(
-                    self.weights**i for i in range(self.unet.n_stages + 1)
-                )
-            self.weights = tensor(self.weights, dtype=torch.float32)
-            self.weights /= self.weights.sum()
-            self.register_buffer("head_weights", self.weights)
+
 
     def forward(self, x: Tensor):
         return self.unet(x)
@@ -415,10 +400,9 @@ class MaskFeatModule(UNetTrainingModule):
     def training_step(self, batch, _):
         image = batch[image_key]
         if self.global_step == 1:
-            print("input shape:", {image.shape})
-            pprint(
-                "expected output shape", self.unet.calculate_output_size(image.shape)
-            )
+            print("input shape:", image.shape)
+            print("expected output shape: ")
+            pprint(self.unet.calculate_output_size(image.shape))
         hog = self.hog(image)  # (B,C,H',W',D',bins)
         mask = self.mask_fn(image)  # (B,1,H,W,D)
         masked = image * (1 - mask)

@@ -362,7 +362,8 @@ class PlainDecoder(UNetDecoder):
                 for skip_channel in self.skip_channels
             )
         else:
-            return PlainHead(self.skip_channels[0], self.output_channel, dim=self.dim)
+            return nn.ModuleList(PlainHead(self.skip_channels[0], self.output_channel, dim=self.dim))
+
 
     def _build_stages(self):
         stages = []
