@@ -11,7 +11,7 @@ from experiments.utils import (
 )
 import torch
 from fractions import Fraction
-from experiments.utils.assertions import (
+from experiments.assertions import (
     DumbAssertion,
     AssertNoSizeChange,
     AssertSize,

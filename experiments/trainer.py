@@ -4,7 +4,7 @@ from abc import abstractmethod
 from experiments.config import default_training_config
 from experiments.plan import Plan
 from experiments.utils import nowstring, resolved_path
-from experiments.utils.assertions import AssertEq
+from experiments.assertions import AssertEq
 import importlib
 import warnings
 import lightning as L

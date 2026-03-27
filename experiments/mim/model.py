@@ -14,7 +14,7 @@ from experiments.nets.generic_modules import ConvBlock
 from math import prod
 from experiments.nets.plainunet import PlainUNet
 from experiments.trainer import UNetTrainingModule
-from experiments.utils.assertions import AssertEq
+from experiments.assertions import AssertEq
 from experiments.utils import (
     assert_divisible,
     assert_integer_scale,

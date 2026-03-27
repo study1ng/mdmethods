@@ -36,7 +36,10 @@ class SegmentationModule(UNetTrainingModule):
             unet, original_head = load_from_pretrained(
                 pretrained_path=pretrained_path, unet=unet
             )
-            original_head.reinitialize_unet(unet=unet, **kwargs)
+            if isinstance(original_head, nn.ModuleList):
+                original_head[0].reinitialize_unet(unet=unet, **kwargs)
+            else:
+                original_head.reinitialize_unet(unet=unet, **kwargs)
         unet = get_peft_model(unet, lora) if lora is not None else unet
         super().__init__(unet, weights=weights)
         self.loss = loss
@@ -105,7 +108,9 @@ class SegmentationModule(UNetTrainingModule):
     def validation_step(self, batch, _):
         image = batch[image_key]  # (B,C,H,W,D)
         label = batch[label_key]
+        print(torch.max(label))
         self.unet.deep_supervision = False
+        self.unet.decoder.deep_supervision = False
         out = sliding_window_inference(
             image,
             roi_size=self.plan.patch_size,
@@ -118,7 +123,8 @@ class SegmentationModule(UNetTrainingModule):
             padding_mode="replicate",
         )
         self.unet.deep_supervision = self.deep_supervision
-        loss = self.loss(out, label)
+        self.unet.decoder.deep_supervision = self.deep_supervision
+        loss = self.loss(out, label.to("cpu")).to(self.device)
         self.log("validation loss", loss, prog_bar=True, on_step=True, on_epoch=True)
         return {
             "loss": loss,

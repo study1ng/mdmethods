@@ -24,7 +24,7 @@ from experiments.nets.generic_modules import (
 from torch import Tensor, nn
 
 from experiments.utils import elementwise_min, repeat
-from experiments.utils.assertions import AssertEq
+from experiments.assertions import AssertEq
 
 
 class PlainResBlock(Block):
@@ -75,7 +75,11 @@ class PlainResBlock(Block):
         return ConvBlock
 
     def _forward(self, x: Tensor):
-        y = self.norm2(self.conv2(self.act1(self.norm1(self.conv1(x)))))
+        c1 = self.conv1(x)
+        n1 = self.norm1(c1)
+        a1 = self.act1(n1)
+        c2 = self.conv2(a1)
+        y = self.norm2(c2)
         res = self.resconv(x)
         return self.act2(res + y)
 

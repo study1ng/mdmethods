@@ -6,11 +6,11 @@ from experiments.argument_adaptor import ArgumentAdaptor
 from experiments.utils import (
     resolved_path,
     loaded_json,
-    filekey,
     assert_file_exist,
     ensure_dir_new,
     set_symln,
 )
+from experiments.config import filekey
 from typing import Sequence
 import concurrent.futures
 from tqdm import tqdm

@@ -1,4 +1,4 @@
-from experiments.utils import filekey
+from experiments.config import filekey
 class AnalyzedData:
     def __init__(self, data):
         self.min = data["min"]

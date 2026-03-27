@@ -23,7 +23,7 @@ from experiments.preprocess import (
     padded_crop_wrapper,
 )
 from experiments.plan import Plan
-from experiments.utils.assertions import AssertEq
+from experiments.assertions import AssertEq
 
 
 def augmentation_transforms(plan: Plan, image_key, label_key: list | None):
@@ -117,7 +117,7 @@ class CropSegDataModule(L.LightningDataModule):
         self.img_key = [image_key]
         self.label_key = [label_key]
         self.keys = self.img_key + self.label_key
-        self.batch_size = self.plan["configurations"]["3d_fullres"]["batch_size"]
+        self.batch_size = self.plan.batch_size
 
     def setup(self, stage: str):
         def _get_dataset(pimgs, plabels, transforms):
@@ -151,6 +151,14 @@ class CropSegDataModule(L.LightningDataModule):
                 self.plan, self.img_key, self.label_key
             )
             self.train_dataset = _get_dataset(pimgs, plabels, transforms)
+            pimgs = self.preprocessed_dir / "val" / image_key
+            plabels = self.preprocessed_dir / "val" / label_key
+            transforms = Compose([
+                load_transformd(self.img_key + self.label_key),
+                planned_transformd(self.plan, self.img_key, self.label_key),
+            ])
+            self.val_dataset = _get_dataset(pimgs, plabels, transforms)
+
         elif stage == "validate":
             pimgs = self.preprocessed_dir / "val" / image_key
             plabels = self.preprocessed_dir / "val" / label_key
@@ -182,7 +190,7 @@ class CropSegDataModule(L.LightningDataModule):
     def val_dataloader(self):
         return DataLoader(
             self.val_dataset,
-            batch_size=self.batch_size,
+            batch_size=1, # 画像サイズを統一できないので1に設定
             num_workers=self.num_workers,
             pin_memory=True,
         )
@@ -190,7 +198,7 @@ class CropSegDataModule(L.LightningDataModule):
     def test_dataloader(self):
         return DataLoader(
             self.test_dataset,
-            batch_size=self.batch_size,
+            batch_size=1,
             num_workers=self.num_workers,
             pin_memory=True,
         )

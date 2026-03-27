@@ -13,7 +13,7 @@ import json
 import torch
 import numpy as np
 from abc import abstractmethod
-from experiments.utils import resolved_path
+from experiments.utils.fsutils import resolved_path
 import argparse
 from experiments import ArgumentAdaptor
 

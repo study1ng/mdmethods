@@ -3,21 +3,24 @@ import warnings
 
 import experiments.config
 from experiments.config import channel_dim, size_dim
-from experiments.utils import identity
 from torch import Tensor
 from typing import Callable
 
+
 class Assertion(ABC):
-    def __init__(self, *args, msg: str | None = None, **kwargs): 
+    def __init__(self, *args, msg: str | None = None, **kwargs):
         self.msg = msg
 
-    def __call__(self, *args, **kwargs): 
+    def __call__(self, *args, **kwargs):
         if experiments.config.assertion:
-            self.call(*args, **kwargs)
+            try:
+                self.call(*args, **kwargs)
+            except AssertionError as e:
+                raise AssertionError(self.msg.format(*args, **kwargs) if self.msg is not None else f"{args}, {kwargs}") from e
 
     @abstractmethod
-    def call(self, *args, **kwargs):
-        ...
+    def call(self, *args, **kwargs): ...
+
 
 class DumbAssertion(Assertion):
     def call(self, *args, **kwargs):
@@ -29,15 +32,21 @@ class Assert(Assertion):
         super().__init__(msg=msg)
 
     def call(self, a):
-        assert a, self.msg
+        assert a
+
 
 class AssertEq(Assert):
+    def __init__(self, *, msg = None):
+        super().__init__(msg=msg if msg is not None else "expected: {} found: {}")
+
     def call(self, a, b):
         super().call(a == b)
+
 
 class AssertNe(Assert):
     def call(self, a, b):
         return super().call(a != b)
+
 
 class SeqAssertion(Assertion):
     def __init__(self, *assertions):
@@ -59,7 +68,7 @@ class AssertShape(Assertion):
         ) = None,
         dim: int | slice = slice(None),
         *,
-        msg: str | None = None
+        msg: str | None = None,
     ):
         super().__init__(msg=msg)
         if (
@@ -108,8 +117,8 @@ class AssertSize(AssertShape):
 
 
 class AssertNoShapeChange(AssertShape):
-    def __init__(self, dim=slice(None), *, msg = None):
-        super().__init__(None, None, identity, dim=dim, msg=msg)
+    def __init__(self, dim=slice(None), *, msg=None):
+        super().__init__(None, None, lambda *args: args, dim=dim, msg=msg)
 
 
 class AssertNoChannelChange(AssertNoShapeChange):

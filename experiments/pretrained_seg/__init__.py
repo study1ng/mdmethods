@@ -1,6 +1,5 @@
 from experiments.trainer import PlannedExperiment
-from experiments.nets.ubimamba import UBiMamba as UNet
-from experiments.prune import SpacingShapeStrictPruner as Pruner
+from experiments.prune import NoPruner as Pruner
 from experiments.analyze import CTAnalyzer as Analyzer
 from experiments.pretrained_seg.datamodule import CropSegDataModule as DataModule
 from experiments.pretrained_seg.model import SegmentationModule as Model
@@ -30,6 +29,7 @@ class PlainSegmentation(PlannedExperiment):
     def get_argument_parser(self):
         parser = super().get_argument_parser()
         parser.add_argument("pretrained_path", type=resolved_path, default=None)
+        return parser
 
     def _build_data_module(self):
         return DataModule(self.data, self.plan)

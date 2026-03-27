@@ -1,7 +1,7 @@
 from functools import wraps
 from fractions import Fraction
 from typing import Callable
-from experiments.utils.assertions import AssertEq, Assert
+from experiments.assertions import AssertEq, Assert
 
 
 def repeat(

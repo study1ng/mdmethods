@@ -1,7 +1,7 @@
 from fractions import Fraction
 from typing import Callable
 
-from experiments.utils.assertions import AssertEq
+from experiments.assertions import AssertEq
 from experiments.nets.base import AssertSize, BaseUNetModule, Block, Pool
 from torch import nn, Tensor
 
