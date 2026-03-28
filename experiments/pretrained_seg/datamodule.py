@@ -14,7 +14,7 @@ from monai.transforms import (
     RandScaleIntensityd,
     RandAdjustContrastd,
     MaskIntensityd,
-    SpatialPadd,
+    RandSpatialCropd,
 )
 from experiments.config import filekey, image_key, label_key
 from experiments.preprocess import (
@@ -103,6 +103,26 @@ def augmentation_transforms(plan: Plan, image_key, label_key: list | None):
     return Compose(composelist)
 
 
+def val_transforms(plan: Plan, image_key, label_key: list | None):
+    all_key = image_key + label_key if label_key is not None else image_key
+    patch_size = plan.patch_size
+    composelist = [
+        load_transformd(all_key),
+        planned_transformd(plan, image_key, label_key),
+        RandSpatialCropd(keys=all_key, roi_size=patch_size),
+    ]
+    return Compose(composelist)
+
+
+def test_transforms(plan: Plan, image_key, label_key: list | None):
+    all_key = image_key + label_key if label_key is not None else image_key
+    composelist = [
+        load_transformd(all_key),
+        planned_transformd(plan, image_key, label_key),
+    ]
+    return Compose(composelist)
+
+
 class CropSegDataModule(L.LightningDataModule):
     def __init__(
         self,
@@ -153,27 +173,18 @@ class CropSegDataModule(L.LightningDataModule):
             self.train_dataset = _get_dataset(pimgs, plabels, transforms)
             pimgs = self.preprocessed_dir / "val" / image_key
             plabels = self.preprocessed_dir / "val" / label_key
-            transforms = Compose([
-                load_transformd(self.img_key + self.label_key),
-                planned_transformd(self.plan, self.img_key, self.label_key),
-            ])
+            transforms = val_transforms(self.plan, self.img_key, self.label_key)
             self.val_dataset = _get_dataset(pimgs, plabels, transforms)
 
         elif stage == "validate":
             pimgs = self.preprocessed_dir / "val" / image_key
             plabels = self.preprocessed_dir / "val" / label_key
-            transforms = Compose([
-                load_transformd(self.img_key + self.label_key),
-                planned_transformd(self.plan, self.img_key, self.label_key),
-            ])
+            transforms = val_transforms(self.plan, self.img_key, self.label_key)
             self.val_dataset = _get_dataset(pimgs, plabels, transforms)
         elif stage == "test":
             pimgs = self.preprocessed_dir / "test" / image_key
             plabels = self.preprocessed_dir / "test" / label_key
-            transforms = Compose([
-                load_transformd(self.img_key + self.label_key),
-                planned_transformd(self.plan, self.img_key, self.label_key),
-            ])
+            transforms = test_transforms(self.plan, self.img_key, self.label_key)
             self.test_dataset = _get_dataset(pimgs, plabels, transforms)
         else:
             raise NotImplementedError("Not implemented for " + stage)
@@ -190,7 +201,7 @@ class CropSegDataModule(L.LightningDataModule):
     def val_dataloader(self):
         return DataLoader(
             self.val_dataset,
-            batch_size=1, # 画像サイズを統一できないので1に設定
+            batch_size=1,  # 画像サイズを統一できないので1に設定
             num_workers=self.num_workers,
             pin_memory=True,
         )

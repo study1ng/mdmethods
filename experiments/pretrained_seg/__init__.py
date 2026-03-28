@@ -26,11 +26,6 @@ class PlainSegmentation(PlannedExperiment):
         super().__init__(args, parsed)
         torch.set_float32_matmul_precision("medium")
 
-    def get_argument_parser(self):
-        parser = super().get_argument_parser()
-        parser.add_argument("pretrained_path", type=resolved_path, default=None)
-        return parser
-
     def _build_data_module(self):
         return DataModule(self.data, self.plan)
 
