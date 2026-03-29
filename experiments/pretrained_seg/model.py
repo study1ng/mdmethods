@@ -135,8 +135,8 @@ class SegmentationModule(UNetTrainingModule):
         self.unet.deep_supervision = self.deep_supervision
         self.unet.decoder.deep_supervision = self.deep_supervision
         loss = self.loss(out.to(self.device), label)
-        self.log("validation loss", loss, prog_bar=True, on_step=True, on_epoch=True)
         return {
             "loss": loss,
-            "out": out,
+            "batch": batch,
+            "out": out.detach().to("cpu"),
         }

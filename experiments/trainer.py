@@ -202,6 +202,11 @@ class Experiment(ArgumentAdaptor):
                 return self.trainer.fit(
                     model=self.module, datamodule=self.datamodule, ckpt_path=self.ckpt
                 )
+            case "inference":
+                assert self.ckpt is not None, "inference needs checkpoint path"
+                return self.trainer.test(
+                    model=self.module, datamodule=self.datamodule, ckpt_path=self.ckpt
+                )
             case _:
                 raise NotImplementedError(f"{self.meta.method} is not implemented")
 

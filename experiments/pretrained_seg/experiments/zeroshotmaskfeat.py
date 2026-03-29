@@ -10,6 +10,8 @@ from experiments.pretrained_seg.model import SegmentationModule as Model
 from lightning.pytorch.callbacks import BaseFinetuning
 from lightning import Trainer
 
+from experiments.utils.fsutils import resolved_path
+
 
 class ZeroshotFinetuning(BaseFinetuning):
     def __init__(self):
@@ -49,3 +51,5 @@ class ZeroshotMaskfeat(PlainSegmentation):
 
 def train(args, parsed):
     ZeroshotMaskfeat(args, parsed)()
+
+inference = train

@@ -6,8 +6,6 @@ from experiments.pretrained_seg.model import SegmentationModule as Model
 from experiments.munet.preprocess import PlannedPreprocessor as Preprocessor
 import torch
 
-from experiments.utils.fsutils import resolved_path
-
 
 def prune(args, meta):
     Pruner(args, meta)()
@@ -35,3 +33,5 @@ class PlainSegmentation(PlannedExperiment):
 
 def train(args, meta):
     PlainSegmentation(args, meta)()
+
+inference = train

@@ -10,3 +10,5 @@ class UNet1kEpochs(PlainSegmentation):
 
 def train(args, parsed):
     UNet1kEpochs(args, parsed)()
+
+inference = train
