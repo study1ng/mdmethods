@@ -4,12 +4,13 @@ from experiments.pretrained_seg import (
     analyze,
     preprocess,
     PlainSegmentation,
+    PlainSegInferencer
 )
 from experiments.nets.ubimamba import UBiMamba as UNet
 from experiments.pretrained_seg.model import SegmentationModule as Model
 from lightning.pytorch.callbacks import BaseFinetuning
 from lightning import Trainer
-
+import torch
 from experiments.utils.fsutils import resolved_path
 
 
@@ -45,11 +46,22 @@ class ZeroshotMIM(PlainSegmentation):
 
     def _build_module(self):
         unet = UNet.from_plan(self.plan, 1, deep_supervision=True, output_channel=118)
-        lm = Model(unet=unet, pretrained_path=self.args.pretrained_path, plan=self.plan)
+        lm = Model(unet=unet, plan=self.plan)
         return lm
 
 
 def train(args, parsed):
     ZeroshotMIM(args, parsed)()
 
-inference = train
+class Inference(PlainSegInferencer):
+    def _build_module(self):
+        unet = UNet.from_plan(self.plan, 1, deep_supervision=True, output_channel=118)
+        checkpoint = torch.load(self.ckpt_path, map_location=lambda storage, loc: storage)
+        if "unet_hparams" in checkpoint["hyper_parameters"]:
+            del checkpoint["hyper_parameters"]["unet_hparams"]
+        model = Model(**checkpoint["hyper_parameters"], unet=unet)
+        model.load_state_dict(checkpoint["state_dict"])
+        return model
+
+def inference(args, parsed):
+    Inference(args, parsed)()

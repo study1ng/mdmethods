@@ -118,7 +118,6 @@ class SegmentationModule(UNetTrainingModule):
     
     def test_step(self, batch, _):
         image = batch[image_key]  # (B,C,H,W,D)
-        label = batch[label_key]
         self.unet.deep_supervision = False
         self.unet.decoder.deep_supervision = False
         out = sliding_window_inference(
@@ -134,9 +133,4 @@ class SegmentationModule(UNetTrainingModule):
         )
         self.unet.deep_supervision = self.deep_supervision
         self.unet.decoder.deep_supervision = self.deep_supervision
-        loss = self.loss(out.to(self.device), label)
-        return {
-            "loss": loss,
-            "batch": batch,
-            "out": out.detach().to("cpu"),
-        }
+        return out.detach().to("cpu")
