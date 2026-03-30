@@ -1,0 +1,566 @@
+lora: null
+loss: !!python/object:monai.losses.dice.DiceCELoss
+  _backward_hooks: !!python/object/apply:collections.OrderedDict
+  - []
+  _backward_pre_hooks: !!python/object/apply:collections.OrderedDict
+  - []
+  _buffers: !!python/object/apply:collections.OrderedDict
+  - []
+  _forward_hooks: !!python/object/apply:collections.OrderedDict
+  - []
+  _forward_hooks_always_called: !!python/object/apply:collections.OrderedDict
+  - []
+  _forward_hooks_with_kwargs: !!python/object/apply:collections.OrderedDict
+  - []
+  _forward_pre_hooks: !!python/object/apply:collections.OrderedDict
+  - []
+  _forward_pre_hooks_with_kwargs: !!python/object/apply:collections.OrderedDict
+  - []
+  _is_full_backward_hook: null
+  _load_state_dict_post_hooks: !!python/object/apply:collections.OrderedDict
+  - []
+  _load_state_dict_pre_hooks: !!python/object/apply:collections.OrderedDict
+  - []
+  _modules: !!python/object/apply:collections.OrderedDict
+  - - - dice
+      - !!python/object:monai.losses.dice.DiceLoss
+        _backward_hooks: !!python/object/apply:collections.OrderedDict
+        - []
+        _backward_pre_hooks: !!python/object/apply:collections.OrderedDict
+        - []
+        _buffers: !!python/object/apply:collections.OrderedDict
+        - - - class_weight
+            - null
+        _forward_hooks: !!python/object/apply:collections.OrderedDict
+        - []
+        _forward_hooks_always_called: !!python/object/apply:collections.OrderedDict
+        - []
+        _forward_hooks_with_kwargs: !!python/object/apply:collections.OrderedDict
+        - []
+        _forward_pre_hooks: !!python/object/apply:collections.OrderedDict
+        - []
+        _forward_pre_hooks_with_kwargs: !!python/object/apply:collections.OrderedDict
+        - []
+        _is_full_backward_hook: null
+        _load_state_dict_post_hooks: !!python/object/apply:collections.OrderedDict
+        - []
+        _load_state_dict_pre_hooks: !!python/object/apply:collections.OrderedDict
+        - []
+        _modules: !!python/object/apply:collections.OrderedDict
+        - []
+        _non_persistent_buffers_set: !!set {}
+        _parameters: !!python/object/apply:collections.OrderedDict
+        - []
+        _state_dict_hooks: !!python/object/apply:collections.OrderedDict
+        - []
+        _state_dict_pre_hooks: !!python/object/apply:collections.OrderedDict
+        - []
+        batch: true
+        include_background: false
+        jaccard: false
+        other_act: null
+        reduction: mean
+        sigmoid: false
+        smooth_dr: 1.0e-05
+        smooth_nr: 1.0e-05
+        soft_label: false
+        softmax: true
+        squared_pred: false
+        to_onehot_y: true
+        training: true
+    - - cross_entropy
+      - !!python/object:torch.nn.modules.loss.CrossEntropyLoss
+        _backward_hooks: !!python/object/apply:collections.OrderedDict
+        - []
+        _backward_pre_hooks: !!python/object/apply:collections.OrderedDict
+        - []
+        _buffers: !!python/object/apply:collections.OrderedDict
+        - - - weight
+            - null
+        _forward_hooks: !!python/object/apply:collections.OrderedDict
+        - []
+        _forward_hooks_always_called: !!python/object/apply:collections.OrderedDict
+        - []
+        _forward_hooks_with_kwargs: !!python/object/apply:collections.OrderedDict
+        - []
+        _forward_pre_hooks: !!python/object/apply:collections.OrderedDict
+        - []
+        _forward_pre_hooks_with_kwargs: !!python/object/apply:collections.OrderedDict
+        - []
+        _is_full_backward_hook: null
+        _load_state_dict_post_hooks: !!python/object/apply:collections.OrderedDict
+        - []
+        _load_state_dict_pre_hooks: !!python/object/apply:collections.OrderedDict
+        - []
+        _modules: !!python/object/apply:collections.OrderedDict
+        - []
+        _non_persistent_buffers_set: !!set {}
+        _parameters: !!python/object/apply:collections.OrderedDict
+        - []
+        _state_dict_hooks: !!python/object/apply:collections.OrderedDict
+        - []
+        _state_dict_pre_hooks: !!python/object/apply:collections.OrderedDict
+        - []
+        ignore_index: -100
+        label_smoothing: 0.0
+        reduction: mean
+        training: true
+    - - binary_cross_entropy
+      - !!python/object:torch.nn.modules.loss.BCEWithLogitsLoss
+        _backward_hooks: !!python/object/apply:collections.OrderedDict
+        - []
+        _backward_pre_hooks: !!python/object/apply:collections.OrderedDict
+        - []
+        _buffers: !!python/object/apply:collections.OrderedDict
+        - - - weight
+            - null
+          - - pos_weight
+            - null
+        _forward_hooks: !!python/object/apply:collections.OrderedDict
+        - []
+        _forward_hooks_always_called: !!python/object/apply:collections.OrderedDict
+        - []
+        _forward_hooks_with_kwargs: !!python/object/apply:collections.OrderedDict
+        - []
+        _forward_pre_hooks: !!python/object/apply:collections.OrderedDict
+        - []
+        _forward_pre_hooks_with_kwargs: !!python/object/apply:collections.OrderedDict
+        - []
+        _is_full_backward_hook: null
+        _load_state_dict_post_hooks: !!python/object/apply:collections.OrderedDict
+        - []
+        _load_state_dict_pre_hooks: !!python/object/apply:collections.OrderedDict
+        - []
+        _modules: !!python/object/apply:collections.OrderedDict
+        - []
+        _non_persistent_buffers_set: !!set {}
+        _parameters: !!python/object/apply:collections.OrderedDict
+        - []
+        _state_dict_hooks: !!python/object/apply:collections.OrderedDict
+        - []
+        _state_dict_pre_hooks: !!python/object/apply:collections.OrderedDict
+        - []
+        reduction: mean
+        training: true
+  _non_persistent_buffers_set: !!set {}
+  _parameters: !!python/object/apply:collections.OrderedDict
+  - []
+  _state_dict_hooks: !!python/object/apply:collections.OrderedDict
+  - []
+  _state_dict_pre_hooks: !!python/object/apply:collections.OrderedDict
+  - []
+  lambda_ce: 1.0
+  lambda_dice: 1.0
+  reduction: mean
+  training: true
+plan: !!python/object:experiments.plan.Plan
+  batch_size: 2
+  conv_kernel_size:
+  - !!python/tuple
+    - 3
+    - 3
+    - 3
+  - !!python/tuple
+    - 3
+    - 3
+    - 3
+  - !!python/tuple
+    - 3
+    - 3
+    - 3
+  - !!python/tuple
+    - 3
+    - 3
+    - 3
+  - !!python/tuple
+    - 3
+    - 3
+    - 3
+  dim: 3
+  jplan: &id001
+    UNet_base_num_features: 32
+    UNet_class_name: PlainConvUNet
+    batch_dice: true
+    batch_size: 2
+    conv_kernel_sizes:
+    - - 3
+      - 3
+      - 3
+    - - 3
+      - 3
+      - 3
+    - - 3
+      - 3
+      - 3
+    - - 3
+      - 3
+      - 3
+    - - 3
+      - 3
+      - 3
+    data_identifier: nnUNetPlans_3d_fullres
+    median_image_size_in_voxels:
+    - 231.0
+    - 231.0
+    - 240.0
+    n_conv_per_stage_decoder:
+    - 2
+    - 2
+    - 2
+    - 2
+    n_conv_per_stage_encoder:
+    - 2
+    - 2
+    - 2
+    - 2
+    - 2
+    normalization_schemes:
+    - CTNormalization
+    num_pool_per_axis:
+    - 4
+    - 4
+    - 4
+    patch_size:
+    - 112
+    - 112
+    - 128
+    pool_op_kernel_sizes:
+    - - 1
+      - 1
+      - 1
+    - - 2
+      - 2
+      - 2
+    - - 2
+      - 2
+      - 2
+    - - 2
+      - 2
+      - 2
+    - - 2
+      - 2
+      - 2
+    preprocessor_name: DefaultPreprocessor
+    resampling_fn_data: resample_data_or_seg_to_shape
+    resampling_fn_data_kwargs:
+      force_separate_z: null
+      is_seg: false
+      order: 3
+      order_z: 0
+    resampling_fn_probabilities: resample_data_or_seg_to_shape
+    resampling_fn_probabilities_kwargs:
+      force_separate_z: null
+      is_seg: false
+      order: 1
+      order_z: 0
+    resampling_fn_seg: resample_data_or_seg_to_shape
+    resampling_fn_seg_kwargs:
+      force_separate_z: null
+      is_seg: true
+      order: 1
+      order_z: 0
+    spacing:
+    - 1.5
+    - 1.5
+    - 1.5
+    unet_max_num_features: 320
+    use_mask_for_norm:
+    - false
+  max: 11368.0
+  max_feature_channel: 320
+  mean: -99.83092498779297
+  median: 39.0
+  min: -9052.0
+  n_stages: 5
+  patch_size: !!python/tuple
+  - 128
+  - 112
+  - 112
+  percentile_00_5: -1003.0
+  percentile_99_5: 1545.0
+  plan:
+    configurations:
+      2d:
+        UNet_base_num_features: 32
+        UNet_class_name: PlainConvUNet
+        batch_dice: true
+        batch_size: 36
+        conv_kernel_sizes:
+        - - 3
+          - 3
+        - - 3
+          - 3
+        - - 3
+          - 3
+        - - 3
+          - 3
+        - - 3
+          - 3
+        - - 3
+          - 3
+        - - 3
+          - 3
+        data_identifier: nnUNetPlans_2d
+        median_image_size_in_voxels:
+        - 231.0
+        - 240.0
+        n_conv_per_stage_decoder:
+        - 2
+        - 2
+        - 2
+        - 2
+        - 2
+        - 2
+        n_conv_per_stage_encoder:
+        - 2
+        - 2
+        - 2
+        - 2
+        - 2
+        - 2
+        - 2
+        normalization_schemes:
+        - CTNormalization
+        num_pool_per_axis:
+        - 6
+        - 6
+        patch_size:
+        - 256
+        - 256
+        pool_op_kernel_sizes:
+        - - 1
+          - 1
+        - - 2
+          - 2
+        - - 2
+          - 2
+        - - 2
+          - 2
+        - - 2
+          - 2
+        - - 2
+          - 2
+        - - 2
+          - 2
+        preprocessor_name: DefaultPreprocessor
+        resampling_fn_data: resample_data_or_seg_to_shape
+        resampling_fn_data_kwargs:
+          force_separate_z: null
+          is_seg: false
+          order: 3
+          order_z: 0
+        resampling_fn_probabilities: resample_data_or_seg_to_shape
+        resampling_fn_probabilities_kwargs:
+          force_separate_z: null
+          is_seg: false
+          order: 1
+          order_z: 0
+        resampling_fn_seg: resample_data_or_seg_to_shape
+        resampling_fn_seg_kwargs:
+          force_separate_z: null
+          is_seg: true
+          order: 1
+          order_z: 0
+        spacing:
+        - 1.5
+        - 1.5
+        unet_max_num_features: 512
+        use_mask_for_norm:
+        - false
+      3d_cascade_fullres:
+        inherits_from: 3d_fullres
+        previous_stage: 3d_lowres
+      3d_fullres: *id001
+      3d_lowres:
+        UNet_base_num_features: 32
+        UNet_class_name: PlainConvUNet
+        batch_dice: false
+        batch_size: 2
+        conv_kernel_sizes:
+        - - 3
+          - 3
+          - 3
+        - - 3
+          - 3
+          - 3
+        - - 3
+          - 3
+          - 3
+        - - 3
+          - 3
+          - 3
+        - - 3
+          - 3
+          - 3
+        data_identifier: nnUNetPlans_3d_lowres
+        median_image_size_in_voxels:
+        - 182
+        - 182
+        - 189
+        n_conv_per_stage_decoder:
+        - 2
+        - 2
+        - 2
+        - 2
+        n_conv_per_stage_encoder:
+        - 2
+        - 2
+        - 2
+        - 2
+        - 2
+        next_stage: 3d_cascade_fullres
+        normalization_schemes:
+        - CTNormalization
+        num_pool_per_axis:
+        - 4
+        - 4
+        - 4
+        patch_size:
+        - 112
+        - 112
+        - 128
+        pool_op_kernel_sizes:
+        - - 1
+          - 1
+          - 1
+        - - 2
+          - 2
+          - 2
+        - - 2
+          - 2
+          - 2
+        - - 2
+          - 2
+          - 2
+        - - 2
+          - 2
+          - 2
+        preprocessor_name: DefaultPreprocessor
+        resampling_fn_data: resample_data_or_seg_to_shape
+        resampling_fn_data_kwargs:
+          force_separate_z: null
+          is_seg: false
+          order: 3
+          order_z: 0
+        resampling_fn_probabilities: resample_data_or_seg_to_shape
+        resampling_fn_probabilities_kwargs:
+          force_separate_z: null
+          is_seg: false
+          order: 1
+          order_z: 0
+        resampling_fn_seg: resample_data_or_seg_to_shape
+        resampling_fn_seg_kwargs:
+          force_separate_z: null
+          is_seg: true
+          order: 1
+          order_z: 0
+        spacing:
+        - 1.9001551220814243
+        - 1.9001551220814243
+        - 1.9001551220814243
+        unet_max_num_features: 320
+        use_mask_for_norm:
+        - false
+    dataset_name: Dataset003_totalsegmentator
+    experiment_planner_used: ExperimentPlanner
+    foreground_intensity_properties_per_channel:
+      '0': &id002
+        max: 11368.0
+        mean: -99.83092498779297
+        median: 39.0
+        min: -9052.0
+        percentile_00_5: -1003.0
+        percentile_99_5: 1545.0
+        std: 502.92449951171875
+    image_reader_writer: NibabelIO
+    label_manager: LabelManager
+    original_median_shape_after_transp:
+    - 231
+    - 231
+    - 240
+    original_median_spacing_after_transp:
+    - 1.5
+    - 1.5
+    - 1.5
+    plans_name: nnUNetPlans
+    transpose_backward:
+    - 0
+    - 1
+    - 2
+    transpose_forward:
+    - 0
+    - 1
+    - 2
+  plan_path: !!python/object/apply:pathlib.PosixPath
+  - /
+  - suedata1
+  - Free
+  - dkato
+  - U-Mamba
+  - data
+  - data
+  - nnUNet_preprocessed
+  - Dataset003_totalsegmentator
+  - nnUNetPlans.json
+  pool_strides:
+  - !!python/tuple
+    - !!python/object/apply:fractions.Fraction
+      - '1'
+    - !!python/object/apply:fractions.Fraction
+      - '1'
+    - !!python/object/apply:fractions.Fraction
+      - '1'
+  - !!python/tuple
+    - !!python/object/apply:fractions.Fraction
+      - '2'
+    - !!python/object/apply:fractions.Fraction
+      - '2'
+    - !!python/object/apply:fractions.Fraction
+      - '2'
+  - !!python/tuple
+    - !!python/object/apply:fractions.Fraction
+      - '2'
+    - !!python/object/apply:fractions.Fraction
+      - '2'
+    - !!python/object/apply:fractions.Fraction
+      - '2'
+  - !!python/tuple
+    - !!python/object/apply:fractions.Fraction
+      - '2'
+    - !!python/object/apply:fractions.Fraction
+      - '2'
+    - !!python/object/apply:fractions.Fraction
+      - '2'
+  - !!python/tuple
+    - !!python/object/apply:fractions.Fraction
+      - '2'
+    - !!python/object/apply:fractions.Fraction
+      - '2'
+    - !!python/object/apply:fractions.Fraction
+      - '2'
+  spacing: !!python/tuple
+  - 1.5
+  - 1.5
+  - 1.5
+  splan: *id002
+  std: 502.92449951171875
+  stem_channel: 32
+pretrained_path: !!python/object/apply:pathlib.PosixPath
+- /
+- home
+- dkato
+- mmamba
+- data
+- trained
+- luna_and_tcia
+- maskfeat
+- maskratio0_6
+- 2026.03.21.13.55.46
+- last.ckpt
+unet_hparams:
+  _headname: experiments.nets.plainunet.PlainHead
+  _headparams: !!python/tuple
+  - !!python/tuple []
+  - {}
+  _unetname: experiments.nets.ubimamba.UBiMamba
+weights: null

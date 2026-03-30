@@ -114,11 +114,10 @@ def val_transforms(plan: Plan, image_key, label_key: list | None):
     return Compose(composelist)
 
 
-def test_transforms(plan: Plan, image_key, label_key: list | None):
-    all_key = image_key + label_key if label_key is not None else image_key
+def test_transforms(plan: Plan, image_key):
     composelist = [
-        load_transformd(all_key),
-        planned_transformd(plan, image_key, label_key),
+        load_transformd(image_key),
+        planned_transformd(plan, image_key),
     ]
     return Compose(composelist)
 
@@ -140,29 +139,36 @@ class CropSegDataModule(L.LightningDataModule):
         self.batch_size = self.plan.batch_size
 
     def setup(self, stage: str):
-        def _get_dataset(pimgs, plabels, transforms):
+        def _get_dataset(pimgs, plabels=None, *, transforms):
             assert pimgs.exists(), f"the preprocessed img dir {pimgs} do not exists"
-            assert (
-                plabels.exists()
-            ), f"the preprocessed label dir {plabels} do not exists"
             pimgs_files = list(pimgs.iterdir())
             pimgs_files = list(sorted(pimgs_files, key=str))
-            plabels_files = list(plabels.iterdir())
-            plabels_files = list(sorted(plabels_files, key=str))
-            stem = lambda img: filekey(img)
-            for pimg, plabel in zip(pimgs_files, plabels_files, strict=True):
-                AssertEq(msg="pimg: {}, plabel: {}")(stem(pimg), stem(plabel))
+            if plabels is not None:
+                assert (
+                    plabels.exists()
+                ), f"the preprocessed label dir {plabels} do not exists"
+                plabels_files = list(plabels.iterdir())
+                plabels_files = list(sorted(plabels_files, key=str))
+                for pimg, plabel in zip(pimgs_files, plabels_files, strict=True):
+                    AssertEq(msg="pimg: {}, plabel: {}")(filekey(pimg), filekey(plabel))
 
-            files = [
-                {
-                    image_key: pimg,
-                    label_key: plabel,
-                    "name": stem(pimg),
-                }
-                for pimg, plabel in zip(pimgs_files, plabels_files, strict=True)
-                if pimg.suffix == ".gz" and plabel.suffix == ".gz"
-            ]
-            return Dataset(files, transforms)
+                files = [
+                    {
+                        image_key: pimg,
+                        label_key: plabel,
+                        "name": filekey(pimg),
+                    }
+                    for pimg, plabel in zip(pimgs_files, plabels_files, strict=True)
+                    if pimg.suffix == ".gz" and plabel.suffix == ".gz"
+                ]
+                return Dataset(files, transforms)
+            else:
+                return Dataset(
+                    [{image_key: pimg, "name": filekey(pimg)}
+                    for pimg in pimgs_files
+                    if pimg.suffix == ".gz"],
+                    transforms
+                )
 
         if stage == "fit":
             pimgs = self.preprocessed_dir / "train" / image_key
@@ -174,18 +180,18 @@ class CropSegDataModule(L.LightningDataModule):
             pimgs = self.preprocessed_dir / "val" / image_key
             plabels = self.preprocessed_dir / "val" / label_key
             transforms = val_transforms(self.plan, self.img_key, self.label_key)
-            self.val_dataset = _get_dataset(pimgs, plabels, transforms)
+            self.val_dataset = _get_dataset(pimgs, plabels, transforms=transforms)
 
         elif stage == "validate":
             pimgs = self.preprocessed_dir / "val" / image_key
             plabels = self.preprocessed_dir / "val" / label_key
             transforms = val_transforms(self.plan, self.img_key, self.label_key)
-            self.val_dataset = _get_dataset(pimgs, plabels, transforms)
+            self.val_dataset = _get_dataset(pimgs, plabels, transforms=transforms)
         elif stage == "test":
             pimgs = self.preprocessed_dir / "test" / image_key
-            plabels = self.preprocessed_dir / "test" / label_key
-            transforms = test_transforms(self.plan, self.img_key, self.label_key)
-            self.test_dataset = _get_dataset(pimgs, plabels, transforms)
+            transforms = test_transforms(self.plan, self.img_key)
+            self.test_transforms = transforms
+            self.test_dataset = _get_dataset(pimgs, transforms=transforms)
         else:
             raise NotImplementedError("Not implemented for " + stage)
 

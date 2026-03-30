@@ -1,3 +1,6 @@
+from pprint import pprint
+
+from cv2 import transform
 from lightning import Callback, LightningDataModule, Trainer
 from experiments import ArgumentAdaptor
 from abc import abstractmethod
@@ -12,12 +15,13 @@ from pathlib import Path
 from experiments.nets.base import UNet, UNetHead
 import torch
 from torch import tensor, Tensor
-from monai.transforms import SaveImaged
-from monai.data import decollate_batch
+from monai.transforms import SaveImaged, SpatialResample
+from monai.data import decollate_batch, MetaTensor
 
 
 class UNetTrainingModule(L.LightningModule):
     head_weights: Tensor
+
     def __init__(self, unet: UNet, *, weights):
         super().__init__()
         self.unet = unet
@@ -28,16 +32,14 @@ class UNetTrainingModule(L.LightningModule):
         weights = self.initialize_weights(weights)
         self.register_buffer("head_weights", weights)
 
-    def initialize_weights(self, w, *, default = 0.5):
+    def initialize_weights(self, w, *, default=0.5):
         if self.deep_supervision:
             if isinstance(w, tuple):
                 AssertEq()(len(self.unet.decoder.head), len(w))
             if w is None:
                 w = default
             if isinstance(w, float):
-                w = tuple(
-                    w**i for i in range(self.unet.n_stages + 1)
-                )
+                w = tuple(w**i for i in range(self.unet.n_stages + 1))
             w = tensor(w, dtype=torch.float32)
             w /= w.sum()
         return w
@@ -219,18 +221,97 @@ class PlannedExperiment(Experiment):
         self.plan = Plan(self.args.plan_path)
 
 
+def _invert_label(label: MetaTensor | Tensor, transform_info):
+    cls = transform_info["class"]
+    ext = transform_info["extra_info"]
+    match cls:
+        case "CropForeground":
+            if "pad_info" in ext:
+                label = _invert_label(label, ext["pad_info"])
+            orig = transform_info["orig_size"]
+            cropped = ext["cropped"]
+            pos = [
+                cropped[i] if i % 2 == 0 else orig[i // 2] - cropped[i]
+                for i in range(len(cropped))
+            ]
+            pos = [0, label.shape[0]] + pos
+            label_padded = torch.zeros(
+                (label.shape[0], *orig), dtype=label.dtype, device=label.device
+            )
+            indices = tuple(slice(pos[i], pos[i + 1]) for i in range(0, len(pos), 2))
+            label_padded[indices] = label
+            return label_padded
+
+        case "SpatialPad" | "Pad":
+            padded = ext["padded"]
+            indices = tuple(
+                slice(pad[0], -pad[1] if pad[1] > 0 else None) for pad in padded
+            )
+            return label[indices]
+
+        case "SpatialResample":
+            a = ext["src_affine"]
+            ia = torch.inverse(a)
+            resampler = SpatialResample(
+                mode=ext["mode"],
+                align_corners=ext["align_corners"],
+                padding_mode=ext["padding_mode"],
+            )
+            output_data = resampler(
+                img=label,
+                dst_affine=ia,
+                spatial_size=transform_info["orig_size"],
+            )
+            return output_data
+
+        case _:
+            raise NotImplementedError(f"{cls} is not implemented")
+
+
+def invert_label(
+    item: dict[str, MetaTensor | Tensor], image_key=image_key, label_key=label_key
+) -> MetaTensor:
+    image = item[image_key]
+    label = item[label_key]
+    transforms = image.applied_operations
+    for transform_info in reversed(transforms):
+        try:
+            label = _invert_label(label, transform_info)
+        except Exception as e:
+            print(label.shape)
+            pprint(transform_info)
+            raise e from e
+    item[label_key] = MetaTensor(label, meta=item[image_key].meta).to(torch.int16)
+    return item
+
+
 class InferenceCallback(Callback):
-    def __init__(self, save_path, label_key=label_key):
+    def __init__(
+        self,
+        save_path,
+        label_key=label_key,
+        image_key=image_key,
+    ):
         super().__init__()
         self.save_path = save_path
         self.label_key = label_key
-        self.saver = SaveImaged(output_dir=self.save_path, output_postfix="", keys=self.label_key)
-    
-    def on_test_batch_end(self, trainer, pl_module, outputs, batch, batch_idx, dataloader_idx = 0):
+        self.image_key = image_key
+        self.saver = SaveImaged(
+            output_dir=self.save_path, output_postfix="", keys=self.label_key
+        )
+        # Invertdはidで引っかかるので手動で逆変換
+
+    def on_test_batch_end(
+        self, trainer, pl_module, outputs, batch, batch_idx, dataloader_idx=0
+    ):
         out = torch.argmax(outputs, dim=1, keepdim=True)
         batch[self.label_key] = out
         for item in decollate_batch(batch):
+            item = invert_label(
+                item, image_key=self.image_key, label_key=self.label_key
+            )
             self.saver(item)
+
 
 class Inferencer(ArgumentAdaptor):
     def __init__(self, args, parsed):
@@ -246,11 +327,10 @@ class Inferencer(ArgumentAdaptor):
         parser.add_argument("ckpt_path", type=resolved_path)
         parser.add_argument("-d", "--devices", type=int, default=[0], nargs="+")
         return parser
-    
-    def _build_trainer(self) -> Trainer:
-        tr = Trainer(callbacks=[InferenceCallback(self.save_path)])
-        return tr
-    
+
+    @abstractmethod
+    def _build_trainer(self) -> Trainer: ...
+
     def parse_args(self, args):
         super().parse_args(args)
         self.preprocessed = self.args.preprocessed
@@ -280,6 +360,12 @@ class PlannedInferencer(Inferencer):
         parser = super().get_argument_parser()
         parser.add_argument("plan_path", type=resolved_path)
         return parser
+
+    def _build_trainer(self):
+        tr = Trainer(
+            callbacks=[InferenceCallback(self.save_path)], devices=self.devices
+        )
+        return tr
 
     def parse_args(self, args):
         super().parse_args(args)
