@@ -10,6 +10,7 @@ from functools import partial
 from experiments.nets.base import Pool, UNetHead
 import experiments.config
 from experiments.config import image_key
+from experiments.nets.builder import Builder
 from experiments.nets.generic_modules import ConvBlock
 from math import prod
 from experiments.nets.plainunet import PlainUNet
@@ -27,7 +28,6 @@ from experiments.utils import (
     to_fraction,
     repeat,
 )
-
 
 
 class RearrangePool(Pool):
@@ -89,6 +89,7 @@ class ConvPosition(Enum):
     def default(cls):
         return cls.CONV_FIRST
 
+
 class PixelShufflePool(Pool):
     def __init__(
         self,
@@ -120,9 +121,13 @@ class PixelShufflePool(Pool):
     def _conv_first(self):
         # conv_channel / pool_scale = output_channel
         try:
-            conv_channel = assert_to_integer(self.output_channel * prod(self.pool_scale))
+            conv_channel = assert_to_integer(
+                self.output_channel * prod(self.pool_scale)
+            )
         except AssertionError:
-            raise AssertionError(f"conv_channel = output_channel {self.output_channel} * pool_scale {self.pool_scale} would not be an integer")
+            raise AssertionError(
+                f"conv_channel = output_channel {self.output_channel} * pool_scale {self.pool_scale} would not be an integer"
+            )
         return nn.Sequential(
             ConvBlock(
                 input_channel=self.input_channel,
@@ -140,7 +145,9 @@ class PixelShufflePool(Pool):
                 self.input_channel * prod(reciprocal(self.pool_scale))
             )
         except AssertionError:
-            raise AssertionError(f"conv_channel = input_channel {self.input_channel} / pool_scale {self.pool_scale} would not be an integer")
+            raise AssertionError(
+                f"conv_channel = input_channel {self.input_channel} / pool_scale {self.pool_scale} would not be an integer"
+            )
         return nn.Sequential(
             RearrangePool(input_channel=self.input_channel, pool_scale=self.pool_scale),
             ConvBlock(
@@ -159,9 +166,7 @@ class PixelShufflePool(Pool):
         before_conv_channel = assert_to_integer(
             self.input_channel * prod(reciprocal(shrink_scale))
         )
-        after_conv_channel = assert_to_integer(
-            self.output_channel * prod(expand_scale)
-        )
+        after_conv_channel = assert_to_integer(self.output_channel * prod(expand_scale))
         return nn.Sequential(
             RearrangePool(input_channel=self.input_channel, pool_scale=shrink_scale),
             ConvBlock(
@@ -181,9 +186,7 @@ class PixelShufflePool(Pool):
         before_conv_channel = assert_to_integer(
             self.input_channel * prod(reciprocal(expand_scale))
         )
-        after_conv_channel = assert_to_integer(
-            self.output_channel * prod(shrink_scale)
-        )
+        after_conv_channel = assert_to_integer(self.output_channel * prod(shrink_scale))
         return nn.Sequential(
             RearrangePool(input_channel=self.input_channel, pool_scale=expand_scale),
             ConvBlock(
@@ -322,7 +325,7 @@ class PixelShuffleHead(RevertResolutionHead):
 
     def calculate_output_size(self, input_size):
         return self.module.calculate_output_size(input_size)
-    
+
     def _forward(self, x):
         return self.module(x)
 
@@ -332,10 +335,10 @@ class MIMModule(UNetTrainingModule):
 
     def __init__(
         self,
-        unet: PlainUNet,
+        builder: list[dict],
         mask_ratio: float,
         mask_gen=MaskGenerator,
-        head=PixelShuffleHead,
+        head="mim.model.PixelShuffleHead",
         mask_scale: Fraction | tuple[Fraction, ...] | None = None,
         weights: float | tuple[float, ...] | None = None,
         loss_fn=partial(nn.L1Loss, reduction="none"),
@@ -343,11 +346,12 @@ class MIMModule(UNetTrainingModule):
         *,
         conv_position: ConvPosition = ConvPosition.default(),
     ):
-        self.head = head
-        self.unet = head.reinitialize_unet(unet, conv_position=conv_position)
-        print(self.unet, weights=weights)
-        super().__init__(unet=unet)
-        self.deep_supervision = unet.deep_supervision
+        builder = (
+            Builder.from_params(builder)
+            .reinitialize(head, conv_position=conv_position)
+            .to_params()
+        )
+        super().__init__(builder=builder, weights=weights)
         self.mask_ratio = mask_ratio
         self.mask_scale = mask_scale
         self.weights = weights
@@ -366,6 +370,7 @@ class MIMModule(UNetTrainingModule):
             self.mask_scale = mask_scale
             print("default mask scale: ", self.mask_scale)
         self.mask_fn = mask_gen(self.mask_scale, self.mask_ratio, dim=self.unet.dim)
+
     def forward(self, x: Tensor):
         return self.unet(x)
 
@@ -405,11 +410,6 @@ class MIMModule(UNetTrainingModule):
     def training_step(self, batch, _):
         experiments.config.assertion = self.global_step < 10
         image = batch[image_key]  # (B,C,H,W,D)
-
-        if self.global_step == 1:
-            print("input shape:", image.shape)
-            print("expected output shape: ")
-            pprint(self.unet.calculate_output_size(image.shape))
         mask_size = elementwise_mul(image.shape[2:], self.mask_scale)
         if not all(is_integer(mask_size)):
             warn(
@@ -434,7 +434,7 @@ class MIMModule(UNetTrainingModule):
         self.log("training loss", l, prog_bar=True, on_step=True, on_epoch=True)
         self.log("visible loss", vl, logger=True, on_epoch=True)
         self.log("masked loss", hl, logger=True, on_epoch=True)
-        self.log("lr", self.optimizers().param_groups[0]['lr'], prog_bar=True)
+        self.log("lr", self.optimizers().param_groups[0]["lr"], prog_bar=True)
         return {
             "loss": l,
             "out": (out[0] if self.deep_supervision else out).detach().cpu(),

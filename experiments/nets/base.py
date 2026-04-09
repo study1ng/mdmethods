@@ -295,7 +295,7 @@ class UNetDecoder(BaseUNetModule):
             lo = stage(lo, r[i])
             ret.append(lo)
         ret = ret[::-1]
-        if not self.deep_supervision:
+        if not self.deep_supervision or not self.training:
             ret = ret[0]
             if isinstance(self.head, nn.ModuleList):
                 h = self.head[0](ret)

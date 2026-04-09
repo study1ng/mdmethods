@@ -1,23 +1,19 @@
 from experiments.plan import Plan
-from experiments.trainer import UNetTrainingModule, load_from_pretrained
-from pathlib import Path
+from experiments.trainer import UNetTrainingModule
 import torch
 import experiments.config
 from experiments.config import image_key, label_key
-from pprint import pprint
 import torch.nn.functional as F
 from torch import nn
-from peft import LoraConfig, get_peft_model
 from monai.inferers import sliding_window_inference
 from monai.losses import DiceCELoss
-
+from experiments.nets.builder import Builder
 
 class SegmentationModule(UNetTrainingModule):
     def __init__(
         self,
         *,
-        unet=None,
-        pretrained_path: Path | str | None = None,
+        builder: list[dict],
         weights=None,
         loss: nn.Module = DiceCELoss(
             include_background=False,
@@ -27,21 +23,9 @@ class SegmentationModule(UNetTrainingModule):
             lambda_dice=1.0,
             lambda_ce=1.0,
         ),
-        lora: LoraConfig | None = None,
         plan: Plan,
-        **kwargs
     ):
-        self.pretrained_path = pretrained_path
-        if pretrained_path is not None:
-            unet, original_head = load_from_pretrained(
-                pretrained_path=pretrained_path, unet=unet
-            )
-            if isinstance(original_head, nn.ModuleList):
-                original_head[0].reinitialize_unet(unet=unet, **kwargs)
-            else:
-                original_head.reinitialize_unet(unet=unet, **kwargs)
-        unet = get_peft_model(unet, lora) if lora is not None else unet
-        super().__init__(unet, weights=weights)
+        super().__init__(builder, weights=weights)
         self.loss = loss
         self.plan = plan
 
@@ -118,8 +102,6 @@ class SegmentationModule(UNetTrainingModule):
     
     def test_step(self, batch, _):
         image = batch[image_key]  # (B,C,H,W,D)
-        self.unet.deep_supervision = False
-        self.unet.decoder.deep_supervision = False
         out = sliding_window_inference(
             image,
             roi_size=self.plan.patch_size,
@@ -131,6 +113,4 @@ class SegmentationModule(UNetTrainingModule):
             device="cpu",
             padding_mode="replicate",
         )
-        self.unet.deep_supervision = self.deep_supervision
-        self.unet.decoder.deep_supervision = self.deep_supervision
         return out.detach().to("cpu")

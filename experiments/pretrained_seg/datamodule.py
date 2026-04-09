@@ -176,7 +176,7 @@ class CropSegDataModule(L.LightningDataModule):
             transforms = augmentation_transforms(
                 self.plan, self.img_key, self.label_key
             )
-            self.train_dataset = _get_dataset(pimgs, plabels, transforms)
+            self.train_dataset = _get_dataset(pimgs, plabels, transforms=transforms)
             pimgs = self.preprocessed_dir / "val" / image_key
             plabels = self.preprocessed_dir / "val" / label_key
             transforms = val_transforms(self.plan, self.img_key, self.label_key)

@@ -1,17 +1,12 @@
-from lightning import Callback
-import torchvision
-
 from experiments.mim.preprocess import PlannedSSLPreprocessor as Preprocessor
 from experiments.mim.datamodule import SSLDataModule as DataModule
 from experiments.mim.model import MIMModule as Model
+from experiments.nets.builder import Builder
 from experiments.trainer import PlannedExperiment
-from experiments.nets.ubimamba import UBiMamba as UNet
 from experiments.prune import SpacingShapeStrictPruner as Pruner
 from experiments.analyze import CTAnalyzer as Analyzer
-from experiments.config import default_training_config, image_key
 import torch
 
-from experiments.utils import resolved_path
 
 
 def prune(args, meta):
@@ -37,10 +32,14 @@ class MIM(PlannedExperiment):
         return DataModule(self.data, self.plan)
 
     def _build_module(self):
-        unet = UNet.from_plan(
-            self.plan, input_channel=1, output_channel=1, deep_supervision=True
-        )
-        lm = Model(unet, mask_ratio=0.6)
+        builder = Builder().based_on_plan(
+            "nets.ubimamba.UBiMamba",
+            self.plan,
+            input_channel=1,
+            output_channel=1,
+            deep_supervision=True,
+        ).to_params()
+        lm = Model(builder, mask_ratio=0.6)
         return lm
 
 

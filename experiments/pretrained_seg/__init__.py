@@ -1,4 +1,5 @@
-from experiments.trainer import Inferencer, PlannedExperiment, PlannedInferencer
+from experiments.nets.builder import Builder
+from experiments.trainer import PlannedExperiment, PlannedInferencer
 from experiments.prune import NoPruner as Pruner
 from experiments.analyze import CTAnalyzer as Analyzer
 from experiments.pretrained_seg.datamodule import CropSegDataModule as DataModule
@@ -44,7 +45,8 @@ class PlainSegInferencer(PlannedInferencer):
         return DataModule(self.preprocessed, self.plan)
     
     def _build_module(self):
-        lm = Model(pretrained_path=self.ckpt_path, plan=self.plan)
+        builder = Builder().based_on_ckpt(self.ckpt_path).to_params()
+        lm = Model(builder, plan=self.plan)
         return lm
 
 

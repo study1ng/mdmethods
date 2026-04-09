@@ -6,6 +6,7 @@ import einops.layers
 import einops.layers.torch
 from torch import Tensor, nn
 import torch
+from experiments.nets.builder import Builder
 from experiments.nets.plainunet import PlainUNet
 from experiments.trainer import UNetTrainingModule
 from experiments.utils import (
@@ -268,9 +269,7 @@ class HogHead(RevertResolutionHead):
         )
 
     @classmethod
-    def _reinitialize_unet(
-        cls, unet, hog_channel: int, output_scale, *args, **kwargs
-    ):
+    def _reinitialize_unet(cls, unet, hog_channel: int, output_scale, *args, **kwargs):
         return super()._reinitialize_unet(
             unet=unet,
             output_scale=output_scale,
@@ -290,7 +289,7 @@ class HogHead(RevertResolutionHead):
 class MaskFeatModule(UNetTrainingModule):
     def __init__(
         self,
-        unet: PlainUNet,
+        builder: list[dict],
         mask_ratio,
         mask_gen=MaskGenerator,
         mask_scale=None,
@@ -307,19 +306,20 @@ class MaskFeatModule(UNetTrainingModule):
         self.gaussian_window_size = gaussian_window_size
         self.signed = signed
         self.conv_position = conv_position
-        self.deep_supervision = unet.deep_supervision
         self.mask_ratio = mask_ratio
         self.mask_scale = mask_scale
         self.weights = weights
         self.visible_loss_weight = visible_loss_weight
         if mask_scale is None:
+            print(builder)
+            unet = Builder.from_params(builder).build() # unefficient build but we need to initialize mask_scale
             mask_scale = repeat(
                 Fraction(
                     1,
                 ),
                 dim=unet.dim,
             )
-            for scale in self.unet.encoder_pool_scales:
+            for scale in unet.encoder_pool_scales:
                 mask_scale = elementwise_mul(mask_scale, scale)
             self.mask_scale = mask_scale
             print("default mask scale: ", self.mask_scale)
@@ -336,30 +336,28 @@ class MaskFeatModule(UNetTrainingModule):
             # mask_sizeの約数となるように調整
             self.cell_size = _find_closest_divisor(mask_size, 8)
             print("default cell size: ", self.cell_size)
-
         hog = HogLayer3D(
             cell_size=self.cell_size,
             block_size=1,  # ブロックでの正規化は行わない
             gaussian_window_size=self.gaussian_window_size,
             signed=self.signed,
         )
-        unet = HogHead.reinitialize_unet(
-            unet,
+        builder = Builder.from_params(builder).reinitialize(
+            "maskfeat.model.HogHead",
             hog_channel=hog.bin_count,
             output_scale=repeat(
                 to_fraction_with_denominator(1, self.cell_size),
-                dim=unet.dim,
+                dim=len(self.mask_scale),
                 types=Fraction,
             ),
             conv_position=conv_position,
-        )
+        ).to_params()
+        super().__init__(builder=builder, weights=weights)
 
-        super().__init__(unet=unet, weights=weights)
         self.cell_per_mask = assert_divisible(mask_size, self.cell_size)
         self.loss = loss_fn()
         self.hog = hog
         self.mask_fn = mask_gen(self.mask_scale, self.mask_ratio, dim=self.unet.dim)
-
 
     def forward(self, x: Tensor):
         return self.unet(x)
@@ -399,10 +397,6 @@ class MaskFeatModule(UNetTrainingModule):
 
     def training_step(self, batch, _):
         image = batch[image_key]
-        if self.global_step == 1:
-            print("input shape:", image.shape)
-            print("expected output shape: ")
-            pprint(self.unet.calculate_output_size(image.shape))
         hog = self.hog(image)  # (B,C,H',W',D',bins)
         mask = self.mask_fn(image)  # (B,1,H,W,D)
         masked = image * (1 - mask)
@@ -434,4 +428,32 @@ class MaskFeatModule(UNetTrainingModule):
             "loss": l,
             "out": (out[0] if self.deep_supervision else out).detach().cpu(),
             "masked": masked.detach().cpu(),
+        }
+
+    def test_step(self, batch, _):
+        image = batch[image_key]
+        hog = self.hog(image)  # (B,C,H',W',D',bins)
+        mask = self.mask_fn(image)  # (B,1,H,W,D)
+        masked = image * (1 - mask)
+        out = self.unet(masked)  # (B,C,H',W',D',bins)
+        cell_mask = F.interpolate(mask, size=hog.shape[2:5], mode="nearest").unsqueeze(
+            -1
+        )  # (B,1,H,W,D,1)
+        loss = self.loss(out, hog)
+        hl = loss * cell_mask
+        hl = hl.sum() / (
+            cell_mask.sum() * hog.shape[1] * hog.shape[-1] + 1e-5
+        )  # masked_loss
+        vl = loss * (1 - cell_mask)
+        vl = vl.sum() / (
+            (1 - cell_mask).sum() * hog.shape[1] * hog.shape[-1] + 1e-5
+        )  # visible loss
+        l = vl * self.visible_loss_weight + hl * (1 - self.visible_loss_weight)
+        return {
+            "loss": l,
+            "mask loss": hl,
+            "visible loss": vl,
+            "out": out.cpu(),
+            "gt": hog.cpu(),
+            "masked": masked.cpu(),
         }

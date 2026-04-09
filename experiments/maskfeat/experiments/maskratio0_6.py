@@ -1,6 +1,6 @@
 from experiments.mim.model import ConvPosition
+from experiments.nets.builder import Builder
 from experiments.trainer import PlannedExperiment
-from experiments.nets.ubimamba import UBiMamba as UNet
 from experiments.prune import SpacingShapeStrictPruner as Pruner
 from experiments.analyze import CTAnalyzer as Analyzer
 from experiments.mim.datamodule import SSLDataModule as DataModule
@@ -30,10 +30,14 @@ class MaskFeat(PlannedExperiment):
         return DataModule(self.data, self.plan)
 
     def _build_module(self):
-        unet = UNet.from_plan(
-            self.plan, input_channel=1, output_channel=1, deep_supervision=True
-        )
-        lm = Model(unet, mask_ratio=0.6, conv_position=ConvPosition.CONV_LAST)
+        builder = Builder().based_on_plan(
+            "nets.ubimamba.UBiMamba",
+            self.plan,
+            input_channel=1,
+            output_channel=1,
+            deep_supervision=True,
+        ).to_params()
+        lm = Model(builder, mask_ratio=0.6, conv_position=ConvPosition.CONV_LAST)
         return lm
 
 

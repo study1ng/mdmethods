@@ -99,3 +99,4 @@ def get_gaussian_kernel(
         std = (std,) * dim
     AssertEq()(len(gaussian_window_size), len(std))
     return _get_gaussian_kernel(gaussian_window_size, std)
+    
