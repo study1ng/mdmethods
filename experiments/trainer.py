@@ -39,7 +39,7 @@ class UNetTrainingModule(L.LightningModule):
                 w = tuple(w**i for i in range(self.unet.n_stages + 1))
             w = tensor(w, dtype=torch.float32)
             w /= w.sum()
-        return None
+        return w
 
     def on_save_checkpoint(self, checkpoint):
         checkpoint[self.CKPT_BUILDER_KEY] = self.builder
