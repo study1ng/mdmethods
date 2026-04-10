@@ -346,12 +346,13 @@ class MIMModule(UNetTrainingModule):
         *,
         conv_position: ConvPosition = ConvPosition.default(),
     ):
+        super().save_hyperparameters()
         builder = (
             Builder.from_params(builder)
             .reinitialize(head, conv_position=conv_position)
             .to_params()
         )
-        super().__init__(builder=builder, weights=weights)
+        super().__init__(builder, weights=weights)
         self.mask_ratio = mask_ratio
         self.mask_scale = mask_scale
         self.weights = weights

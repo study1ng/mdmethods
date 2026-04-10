@@ -19,9 +19,8 @@ from monai.data import decollate_batch, MetaTensor
 class UNetTrainingModule(L.LightningModule):
     head_weights: Tensor
 
-    def __init__(self, builder: dict, *, weights):
+    def __init__(self, builder: dict, weights):
         super().__init__()
-        self.save_hyperparameters()
         self.unet = Builder.from_params(builder).build()
         print(self.unet)
         self.deep_supervision = self.unet.deep_supervision

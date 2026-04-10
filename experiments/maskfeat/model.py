@@ -302,6 +302,7 @@ class MaskFeatModule(UNetTrainingModule):
         gaussian_window_size: tuple[int, int, int] | int | None = None,
         signed: bool = True,
     ):
+        super().save_hyperparameters()
         self.cell_size = cell_size
         self.gaussian_window_size = gaussian_window_size
         self.signed = signed

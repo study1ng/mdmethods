@@ -7,7 +7,6 @@ import torch.nn.functional as F
 from torch import nn
 from monai.inferers import sliding_window_inference
 from monai.losses import DiceCELoss
-from experiments.nets.builder import Builder
 
 class SegmentationModule(UNetTrainingModule):
     def __init__(
@@ -25,6 +24,7 @@ class SegmentationModule(UNetTrainingModule):
         ),
         plan: Plan,
     ):
+        super().save_hyperparameters()
         super().__init__(builder, weights=weights)
         self.loss = loss
         self.plan = plan
