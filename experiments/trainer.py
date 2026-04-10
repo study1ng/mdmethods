@@ -18,9 +18,11 @@ from monai.data import decollate_batch, MetaTensor
 
 class UNetTrainingModule(L.LightningModule):
     head_weights: Tensor
+    CKPT_BUILDER_KEY: str = "_mm_builder"
 
     def __init__(self, builder: dict, weights):
         super().__init__()
+        self.builder = builder
         self.unet = Builder.from_params(builder).build()
         print(self.unet)
         self.deep_supervision = self.unet.deep_supervision
@@ -37,7 +39,10 @@ class UNetTrainingModule(L.LightningModule):
                 w = tuple(w**i for i in range(self.unet.n_stages + 1))
             w = tensor(w, dtype=torch.float32)
             w /= w.sum()
-        return w
+        return None
+
+    def on_save_checkpoint(self, checkpoint):
+        checkpoint[self.CKPT_BUILDER_KEY] = self.builder
 
 def dl_pretrained_unet(
     pretrained_module_path: Path | str,
@@ -55,7 +60,7 @@ def dl_pretrained_unet(
         pretrained unet
     """
     checkpoint = torch.load(pretrained_module_path, map_location="cpu")
-    builder = Builder.from_params(checkpoint["hyper_parameters"]["builder"])
+    builder = Builder.from_params(checkpoint[UNetTrainingModule.CKPT_BUILDER_KEY])
     print("pretrained unet recipe: ")
     pprint(builder.actions)
     unet = builder.build()
