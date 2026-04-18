@@ -22,6 +22,8 @@ class UNetTrainingModule(L.LightningModule):
 
     def __init__(self, builder: dict, weights):
         super().__init__()
+        print("using builder: ")
+        pprint(builder)
         self.builder = builder
         self.unet = Builder.from_params(builder).build()
         print(self.unet)

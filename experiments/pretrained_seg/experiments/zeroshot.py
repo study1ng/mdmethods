@@ -1,17 +1,15 @@
 from experiments.config import default_training_config
 from experiments.pretrained_seg import (
-    prune,
-    analyze,
-    preprocess,
     PlainSegmentation,
-    PlainSegInferencer
+    analyze,
+    prune,
+    inference
 )
 from experiments.nets.ubimamba import UBiMamba as UNet
 from experiments.pretrained_seg.model import SegmentationModule as Model
 from lightning.pytorch.callbacks import BaseFinetuning
 from lightning import Trainer
 import torch
-from experiments.utils.fsutils import resolved_path
 
 
 class ZeroshotFinetuning(BaseFinetuning):
@@ -28,11 +26,7 @@ class ZeroshotFinetuning(BaseFinetuning):
     def finetune_function(self, pl_module, epoch, optimizer):
         pass
 
-class ZeroshotMIM(PlainSegmentation):
-    def get_argument_parser(self):
-        parser = super().get_argument_parser()
-        parser.add_argument("pretrained_path", type=resolved_path, default=None)
-        return parser
+class Zeroshot(PlainSegmentation):
     def _build_trainer(self):
         config = default_training_config(
             save_path=self.save_path, meta=self.meta, devices=self.devices
@@ -44,24 +38,6 @@ class ZeroshotMIM(PlainSegmentation):
         tr = Trainer(**config)
         return tr
 
-    def _build_module(self):
-        unet = UNet.from_plan(self.plan, 1, deep_supervision=True, output_channel=118)
-        lm = Model(unet=unet, plan=self.plan)
-        return lm
-
 
 def train(args, parsed):
-    ZeroshotMIM(args, parsed)()
-
-class Inference(PlainSegInferencer):
-    def _build_module(self):
-        unet = UNet.from_plan(self.plan, 1, deep_supervision=True, output_channel=118)
-        checkpoint = torch.load(self.ckpt_path, map_location=lambda storage, loc: storage)
-        if "unet_hparams" in checkpoint["hyper_parameters"]:
-            del checkpoint["hyper_parameters"]["unet_hparams"]
-        model = Model(**checkpoint["hyper_parameters"], unet=unet)
-        model.load_state_dict(checkpoint["state_dict"])
-        return model
-
-def inference(args, parsed):
-    Inference(args, parsed)()
+    Zeroshot(args, parsed)()

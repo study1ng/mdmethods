@@ -8,11 +8,12 @@ from torch import nn
 from monai.inferers import sliding_window_inference
 from monai.losses import DiceCELoss
 
+
 class SegmentationModule(UNetTrainingModule):
     def __init__(
         self,
         *,
-        builder: list[dict],
+        builder: list[dict] = None,
         weights=None,
         loss: nn.Module = DiceCELoss(
             include_background=False,
@@ -99,7 +100,7 @@ class SegmentationModule(UNetTrainingModule):
             "loss": loss,
             "out": out,
         }
-    
+
     def test_step(self, batch, _):
         image = batch[image_key]  # (B,C,H,W,D)
         out = sliding_window_inference(
