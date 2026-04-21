@@ -4,7 +4,7 @@ import torch
 import experiments.config
 from experiments.config import image_key, label_key
 import torch.nn.functional as F
-from torch import nn
+from torch import Tensor, nn
 from monai.inferers import sliding_window_inference
 from monai.losses import DiceCELoss
 

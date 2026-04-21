@@ -2,7 +2,7 @@ import importlib
 from peft import LoraConfig, get_peft_model
 from sympy import false
 from experiments.nets.base import UNet
-
+from torch import nn
 
 def dl_module(net: str, expr: bool = True):
     pck, net = net.rsplit(".", 1)

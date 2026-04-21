@@ -15,7 +15,7 @@ class LoRA(PlainSegmentation):
             target_module_type=[
                 "torch.nn.Conv3d",
                 "torch.nn.Linear",
-                "torch.nn.Conv1d",
+                # "torch.nn.Conv1d", # Mamba
                 "torch.nn.Conv2d",
             ],
             skips=["decoder.head"],
