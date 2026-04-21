@@ -279,15 +279,17 @@ class PlainHead(UNetHead):
         return self.conv(x)
 
     @classmethod
-    def _reinitialize_unet(cls, unet: "PlainUNet"):
+    def _reinitialize_unet(cls, unet: "PlainUNet", output_channel: int | None = None):
+        if output_channel is None:
+            output_channel = unet.output_channel
         if unet.deep_supervision:
             unet.decoder.head = nn.ModuleList(
-                PlainHead(skip_channel, unet.output_channel, dim=unet.dim)
+                PlainHead(skip_channel, output_channel, dim=unet.dim)
                 for skip_channel in unet.skip_channels
             )
         else:
             unet.decoder.head = PlainHead(
-                unet.skip_channels[0], unet.output_channel, dim=unet.dim
+                unet.skip_channels[0], output_channel, dim=unet.dim
             )
         return unet
 
@@ -478,4 +480,5 @@ class PlainUNet(UNet):
         args["feature_channel_limitation"] = plan.max_feature_channel
         args["kernel_size"] = [repeat(3, plan.dim)] + plan.conv_kernel_size
         args.update(kwargs)
+        print(args)
         return args

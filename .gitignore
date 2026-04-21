@@ -42,3 +42,4 @@ pdm-python
 data/
 
 mlruns/
+lightning_logs/

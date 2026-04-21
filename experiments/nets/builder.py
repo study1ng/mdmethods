@@ -77,6 +77,7 @@ class Builder(object):
                 "kwargs": kwargs,
             }
         )
+        return self
 
     def load_lm(self, ckpt_path: str, *args, **kwargs):
         self.actions.append(

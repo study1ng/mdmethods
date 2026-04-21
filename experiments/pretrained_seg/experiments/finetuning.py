@@ -2,7 +2,9 @@ from experiments.nets.builder import Builder
 from experiments.pretrained_seg import PlainSegmentation, analyze, prune, inference
 from experiments.pretrained_seg.model import SegmentationModule as Model
 
-class LoRA(PlainSegmentation):
+# TODO: Finetuning need a callback which freeze its encoder weight at first and unfreeze from 300th epochs
+
+class Finetuning(PlainSegmentation):
     def _build_module(self):
         builder = Builder()
         if self.args.pretrained_path is not None:
@@ -30,4 +32,4 @@ class LoRA(PlainSegmentation):
         return lm
 
 def train(args, parsed):
-    LoRA(args, parsed)()
+    Finetuning(args, parsed)()

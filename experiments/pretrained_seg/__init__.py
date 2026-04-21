@@ -28,7 +28,7 @@ class PlainSegmentation(PlannedExperiment):
 
     def get_argument_parser(self):
         parser = super().get_argument_parser()
-        parser.add_argument("pretrained_path", type=resolved_path, default=None)
+        parser.add_argument("--pretrained_path", type=resolved_path, default=None)
         return parser
 
     def _build_data_module(self):
@@ -37,14 +37,17 @@ class PlainSegmentation(PlannedExperiment):
     def _build_module(self):
         builder = Builder()
         if self.args.pretrained_path is not None:
-            builder = builder.based_on_ckpt(self.args.pretrained_path).reinitialize("nets.plainunet.PlainHead")
+            builder = builder.based_on_ckpt(self.args.pretrained_path).reinitialize(
+                "nets.plainunet.PlainHead",
+                output_channel = 118,
+            )
         else:
             builder = builder.based_on_plan(
                 self.plan,
                 "nets.ubimamba.UBiMamba",
                 self.plan,
                 input_channel=1,
-                output_channel=1,
+                output_channel=118,
                 deep_supervision=True,
             )
         builder = builder.to_params()
@@ -55,7 +58,7 @@ class PlainSegmentation(PlannedExperiment):
 def train(args, meta):
     PlainSegmentation(args, meta)()
 
-
+# TODO: Fix hre
 class PlainSegInferencer(PlannedInferencer):
     def __init__(self, args, parsed):
         super().__init__(args, parsed)

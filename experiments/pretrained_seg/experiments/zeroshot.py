@@ -19,9 +19,6 @@ class ZeroshotFinetuning(BaseFinetuning):
     def freeze_before_training(self, pl_module):
         self.freeze(pl_module.unet.encoder)
         self.freeze(pl_module.unet.decoder.stages)
-        pl_module.deep_supervision = False
-        pl_module.unet.deep_supervision = False
-        pl_module.unet.decoder.deep_supervision = False # ゼロショットなので深層監督は不要
 
     def finetune_function(self, pl_module, epoch, optimizer):
         pass
@@ -37,6 +34,7 @@ class Zeroshot(PlainSegmentation):
         print("trainer config: ", config)
         tr = Trainer(**config)
         return tr
+    
 
 
 def train(args, parsed):

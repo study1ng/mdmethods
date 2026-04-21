@@ -8,12 +8,14 @@ from torch import nn
 from monai.inferers import sliding_window_inference
 from monai.losses import DiceCELoss
 
+from experiments.utils.wraputils import assert_to_integer
+
 
 class SegmentationModule(UNetTrainingModule):
     def __init__(
         self,
-        *,
         builder: list[dict] = None,
+        *,
         weights=None,
         loss: nn.Module = DiceCELoss(
             include_background=False,
@@ -79,6 +81,17 @@ class SegmentationModule(UNetTrainingModule):
                 )
         else:
             loss = self.loss(out, label)
+        if loss < 0.: 
+            print(loss)
+            print(self.head_weights)
+            print(self.loss, self.loss.lambda_dice, self.loss.lambda_ce)
+            print("label: ", label.shape)
+            if self.deep_supervision:
+                for i in range(len(out)):
+                    print(out[i].shape)
+            else:
+                print(out.shape)
+            raise AssertionError("loss < 0")
         self.log("training loss", loss, prog_bar=True, on_step=True, on_epoch=True)
         self.log("lr", self.optimizers().param_groups[0]["lr"], prog_bar=True)
         return {
