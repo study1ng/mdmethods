@@ -1,94 +1,138 @@
-# from experiments.prune import NoPruner as Pruner
-# from experiments.munet.preprocess import PlannedPreprocessor as Preprocessor
-# from experiments.utils import resolved_path
-# from pathlib import Path
-# from experiments.munet.datamodule import NoCropDataModule as DataModule
-# from experiments.munet.model import MUNet as Model
-# from experiments.nets import UBiMamba as Net
-# import argparse, lightning as L
-# from lightning.pytorch.loggers import CSVLogger
-# from lightning.pytorch.callbacks import ModelCheckpoint
-# from experiments.analyze import CTAnalyzer as Analyzer
-# import torch
-# from experiments.plan import Plan
+from experiments.nets.builder import Builder
+from experiments.prune import NoPruner as Pruner
+from experiments.munet.preprocess import PlannedPreprocessor as Preprocessor
+from experiments.trainer import PlannedExperiment
+from experiments.utils import resolved_path
+from pathlib import Path
+from experiments.munet.datamodule import NoCropDataModule as DataModule
+from experiments.munet.model import MUNetTrainingModule as Model
+from experiments.nets import UBiMamba as Net
+import argparse, lightning as L
+from lightning.pytorch.loggers import CSVLogger
+from lightning.pytorch.callbacks import BaseFinetuning, ModelCheckpoint
+from experiments.analyze import CTAnalyzer as Analyzer
+import torch
+from experiments.plan import Plan
 
 
-# def prune(args):
-#     Pruner(args)()
+def prune(args):
+    Pruner(args)()
 
 
-# def analyze(args):
-#     Analyzer(args)()
+def analyze(args):
+    Analyzer(args)()
 
 
-# def preprocess(args):
-#     Preprocessor(args)()
+def preprocess(args):
+    Preprocessor(args)()
 
 
-# def train(args):
-#     torch.set_float32_matmul_precision("medium")
-#     args = _train_argparse(args)
-#     _train(
-#         preprocessed=args.preprocessed,
-#         pretrained=args.pretrained,
-#         plan_path=args.plan_path,
-#         device=args.devices,
-#         checkpoint=args.ckpt,
-#         maximum_gpu_memory_limit=args.maximum_gpu_memory_limit,
-#     )
+class ZeroshotEncoderFinetuning(BaseFinetuning):
+    def __init__(self):
+        super().__init__()
+
+    def freeze_before_training(self, pl_module):
+        self.freeze(pl_module.unet.encoder)
+
+    def finetune_function(self, pl_module, epoch, optimizer):
+        pass
+    
+
+class MUNetSegmentation(PlannedExperiment):
+    def __init__(self, args, parsed):
+        super().__init__(args, parsed)
+        torch.set_float32_matmul_precision("medium")
+
+    def get_argument_parser(self):
+        parser = super().get_argument_parser()
+        parser.add_argument("--pretrained_path", type=resolved_path, default=None)
+        return parser
+
+    def configure_trainer(self, config):
+        config["callbacks"].append(ZeroshotEncoderFinetuning())
+        return config
+
+    def _build_data_module(self):
+        return DataModule(self.data, self.plan)
+
+    def _build_module(self):
+        builder = Builder()
+        if self.args.pretrained_path is not None:
+            builder = builder.based_on_ckpt(self.args.pretrained_path).reinitialize(
+                "nets.plainunet.PlainHead",
+                output_channel = 118,
+            )
+        else:
+            raise Exception("We need pretrained model because we can't afford the memory consumption for training encoder")
+        builder = builder.to_params()
+        lm = Model(builder=builder, plan=self.plan)
+        return lm
 
 
-# def _train_argparse(args):
-#     parser = argparse.ArgumentParser()
-#     parser.add_argument("preprocessed", type=resolved_path)
-#     parser.add_argument("pretrained", type=resolved_path)
-#     parser.add_argument("plan_path", type=resolved_path)
-#     parser.add_argument("-d", "--devices", type=int, default=[0], nargs="+")
-#     parser.add_argument("-c", "--ckpt", default=None, type=resolved_path)
-#     parser.add_argument(
-#         "-m",
-#         "--maximum_gpu_memory_limit",
-#         default=5.0,
-#         type=float,
-#         help="maximum gpu memory limit for feature maps in gb",
-#     )
-#     args = parser.parse_args(args)
-#     return args
+def train(args):
+    torch.set_float32_matmul_precision("medium")
+    args = _train_argparse(args)
+    _train(
+        preprocessed=args.preprocessed,
+        pretrained=args.pretrained,
+        plan_path=args.plan_path,
+        device=args.devices,
+        checkpoint=args.ckpt,
+        maximum_gpu_memory_limit=args.maximum_gpu_memory_limit,
+    )
 
 
-# def _train(
-#     preprocessed: Path,
-#     pretrained: Path,
-#     plan_path: str,
-#     maximum_gpu_memory_limit: float,
-#     device: list[int] = [0],
-#     checkpoint: str | None = None,
-# ):
-#     plan = Plan(plan_path)
-#     pretrained.mkdir(parents=True, exist_ok=True)
-#     if checkpoint is not None:
-#         checkpoint = Path(checkpoint)
-#     dm = DataModule(preprocessed, plan)
-#     lm = Net.from_plan(plan.plan, 1, 118)
-#     munet = Model(lm, maximum_gpu_memory_limit * (1 << 30))
-#     tr = L.Trainer(
-#         logger=[CSVLogger(pretrained, name="pretraining.log")],
-#         devices=device,
-#         max_epochs=1000,
-#         min_epochs=1000,
-#         limit_train_batches=250,
-#         default_root_dir=pretrained,
-#         precision="bf16-mixed",
-#         callbacks=[
-#             ModelCheckpoint(
-#                 pretrained,
-#                 "ckpt_{epoch}.pth",
-#                 save_last=True,
-#                 save_top_k=-1,
-#                 every_n_epochs=10,
-#             )
-#         ],
-#         accelerator="gpu",
-#         accumulate_grad_batches=2,
-#     )
-#     tr.fit(model=munet, datamodule=dm, ckpt_path=checkpoint)
+def _train_argparse(args):
+    parser = argparse.ArgumentParser()
+    parser.add_argument("preprocessed", type=resolved_path)
+    parser.add_argument("pretrained", type=resolved_path)
+    parser.add_argument("plan_path", type=resolved_path)
+    parser.add_argument("-d", "--devices", type=int, default=[0], nargs="+")
+    parser.add_argument("-c", "--ckpt", default=None, type=resolved_path)
+    parser.add_argument(
+        "-m",
+        "--maximum_gpu_memory_limit",
+        default=5.0,
+        type=float,
+        help="maximum gpu memory limit for feature maps in gb",
+    )
+    args = parser.parse_args(args)
+    return args
+
+
+def _train(
+    preprocessed: Path,
+    pretrained: Path,
+    plan_path: str,
+    maximum_gpu_memory_limit: float,
+    device: list[int] = [0],
+    checkpoint: str | None = None,
+):
+    plan = Plan(plan_path)
+    pretrained.mkdir(parents=True, exist_ok=True)
+    if checkpoint is not None:
+        checkpoint = Path(checkpoint)
+    dm = DataModule(preprocessed, plan)
+    lm = Net.from_plan(plan.plan, 1, 118)
+    munet = Model(lm, maximum_gpu_memory_limit * (1 << 30))
+    tr = L.Trainer(
+        logger=[CSVLogger(pretrained, name="pretraining.log")],
+        devices=device,
+        max_epochs=1000,
+        min_epochs=1000,
+        limit_train_batches=250,
+        default_root_dir=pretrained,
+        precision="bf16-mixed",
+        callbacks=[
+            ModelCheckpoint(
+                pretrained,
+                "ckpt_{epoch}.pth",
+                save_last=True,
+                save_top_k=-1,
+                every_n_epochs=10,
+            )
+        ],
+        accelerator="gpu",
+        accumulate_grad_batches=2,
+    )
+    tr.fit(model=munet, datamodule=dm, ckpt_path=checkpoint)

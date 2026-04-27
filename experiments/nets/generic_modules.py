@@ -28,6 +28,15 @@ class SequentialBlock(Block):
         return y
 
 
+class LinearBlock(Block):
+    def __init__(self, input_channel, output_channel, *, bias=True):
+        self.bias = bias
+        super().__init__(input_channel, output_channel)
+        self.module = nn.Linear(input_channel, output_channel, bias=bias)
+
+    def _forward(self, x):
+        return self.module(x)
+
 class InstanceNormBlock(Block):
     def __init__(self, input_channel, *, dim: int):
         self.dim = dim
@@ -253,7 +262,7 @@ class RepeatingBlock(Block):
     def _forward(self, x):
         return self.module(x)
 
-class GlobalAverageGap(BaseUNetModule):
+class GlobalAveragePool(BaseUNetModule):
     def __init__(self, output_size: int | tuple[int, ...], *, dim: int):
         super().__init__()
         self.dim = dim

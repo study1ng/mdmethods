@@ -24,18 +24,11 @@ class ZeroshotFinetuning(BaseFinetuning):
         pass
 
 class Zeroshot(PlainSegmentation):
-    def _build_trainer(self):
-        config = default_training_config(
-            save_path=self.save_path, meta=self.meta, devices=self.devices
-        )
+    def configure_trainer(self, config):
         config["max_epochs"] = 100
         config["min_epochs"] = 100
         config["callbacks"].append(ZeroshotFinetuning())
-        print("trainer config: ", config)
-        tr = Trainer(**config)
-        return tr
-    
-
+        return config
 
 def train(args, parsed):
     Zeroshot(args, parsed)()

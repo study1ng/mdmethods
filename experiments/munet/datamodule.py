@@ -16,7 +16,8 @@ from monai.transforms import (
     MaskIntensityd,
     SpatialPadd,
 )
-from experiments.config import image_key, label_key
+from experiments.assertions import AssertEq
+from experiments.config import filekey, image_key, label_key
 from experiments.preprocess import load_transformd, planned_transformd
 from experiments.plan import Plan
 
@@ -82,6 +83,22 @@ def augmentation_transforms(
     ]
     return Compose(composelist)
 
+def val_transforms(plan: Plan, image_key, label_key: list | None):
+    all_key = image_key + label_key if label_key is not None else image_key
+    composelist = [
+        load_transformd(all_key),
+        planned_transformd(plan, image_key, label_key),
+    ]
+    return Compose(composelist)
+
+
+def test_transforms(plan: Plan, image_key):
+    composelist = [
+        load_transformd(image_key),
+        planned_transformd(plan, image_key),
+    ]
+    return Compose(composelist)
+
 
 class NoCropDataModule(L.LightningDataModule):
     def __init__(
@@ -100,42 +117,83 @@ class NoCropDataModule(L.LightningDataModule):
         # self.batch_size = self.plan["configurations"]["3d_fullres"]["batch_size"]
         self.batch_size = 1 # Trainerで勾配を蓄積する
 
-    def setup(self, stage: str | None = None):
-        if stage == "fit" or stage is None:
-            pimgs = self.preprocessed_dir / image_key
-            plabels = self.preprocessed_dir / label_key
+    def setup(self, stage: str | None = None):   
+        def _get_dataset(pimgs, plabels=None, *, transforms):
             assert pimgs.exists(), f"the preprocessed img dir {pimgs} do not exists"
-            assert (
-                plabels.exists()
-            ), f"the preprocessed label dir {plabels} do not exists"
             pimgs_files = list(pimgs.iterdir())
             pimgs_files = list(sorted(pimgs_files, key=str))
-            plabels_files = list(plabels.iterdir())
-            plabels_files = list(sorted(plabels_files, key=str))
-            stem = lambda img: img.name.split(".")[0].split("_")[0]
-            assert all(
-                stem(pimg) == stem(plabel)
-                for pimg, plabel in zip(pimgs_files, plabels_files, strict=True)
+            if plabels is not None:
+                assert (
+                    plabels.exists()
+                ), f"the preprocessed label dir {plabels} do not exists"
+                plabels_files = list(plabels.iterdir())
+                plabels_files = list(sorted(plabels_files, key=str))
+                for pimg, plabel in zip(pimgs_files, plabels_files, strict=True):
+                    AssertEq(msg="pimg: {}, plabel: {}")(filekey(pimg), filekey(plabel))
+
+                files = [
+                    {
+                        image_key: pimg,
+                        label_key: plabel,
+                        "name": filekey(pimg),
+                    }
+                    for pimg, plabel in zip(pimgs_files, plabels_files, strict=True)
+                    if pimg.suffix == ".gz" and plabel.suffix == ".gz"
+                ]
+                return Dataset(files, transforms)
+            else:
+                return Dataset(
+                    [{image_key: pimg, "name": filekey(pimg)}
+                    for pimg in pimgs_files
+                    if pimg.suffix == ".gz"],
+                    transforms
+                )
+        if stage == "fit":
+            pimgs = self.preprocessed_dir / "train" / image_key
+            plabels = self.preprocessed_dir / "train" / label_key
+            transforms = augmentation_transforms(
+                self.plan, self.img_key, self.label_key
             )
+            self.train_dataset = _get_dataset(pimgs, plabels, transforms=transforms)
+            pimgs = self.preprocessed_dir / "val" / image_key
+            plabels = self.preprocessed_dir / "val" / label_key
+            transforms = val_transforms(self.plan, self.img_key, self.label_key)
+            self.val_dataset = _get_dataset(pimgs, plabels, transforms=transforms)
 
-            files = [
-                {
-                    image_key: pimg,
-                    label_key: plabel,
-                    "name": stem(pimg),
-                }
-                for pimg, plabel in zip(pimgs_files, plabels_files, strict=True)
-                if pimg.suffix == ".gz" and plabel.suffix == ".gz"
-            ]
-
-            transforms = augmentation_transforms(self.plan, self.img_key, self.label_key)
-            self.train_dataset = Dataset(files, transforms)
+        elif stage == "validate":
+            pimgs = self.preprocessed_dir / "val" / image_key
+            plabels = self.preprocessed_dir / "val" / label_key
+            transforms = val_transforms(self.plan, self.img_key, self.label_key)
+            self.val_dataset = _get_dataset(pimgs, plabels, transforms=transforms)
+        elif stage == "test":
+            pimgs = self.preprocessed_dir / "test" / image_key
+            transforms = test_transforms(self.plan, self.img_key)
+            self.test_transforms = transforms
+            self.test_dataset = _get_dataset(pimgs, transforms=transforms)
+        else:
+            raise NotImplementedError("Not implemented for " + stage)
 
     def train_dataloader(self):
         return DataLoader(
             self.train_dataset,
             batch_size=self.batch_size,
             shuffle=True,
+            num_workers=self.num_workers,
+            pin_memory=True,
+        )
+
+    def val_dataloader(self):
+        return DataLoader(
+            self.val_dataset,
+            batch_size=1,  # 画像サイズを統一できないので1に設定
+            num_workers=self.num_workers,
+            pin_memory=True,
+        )
+
+    def test_dataloader(self):
+        return DataLoader(
+            self.test_dataset,
+            batch_size=1,
             num_workers=self.num_workers,
             pin_memory=True,
         )

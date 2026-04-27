@@ -1,21 +1,17 @@
 from enum import Enum, auto
 from fractions import Fraction
 from warnings import warn
-from pprint import pprint
-import lightning as L
 import torch, einops.layers.torch
-from torch import nn, tensor, Tensor
+from torch import nn, Tensor
 import torch.nn.functional as F
 from functools import partial
 from experiments.nets.base import Pool, UNetHead
-import experiments.config
 from experiments.config import image_key
 from experiments.nets.builder import Builder
 from experiments.nets.generic_modules import ConvBlock
 from math import prod
 from experiments.nets.plainunet import PlainUNet
 from experiments.trainer import UNetTrainingModule
-from experiments.assertions import AssertEq
 from experiments.utils import (
     assert_divisible,
     assert_integer_scale,
@@ -28,7 +24,6 @@ from experiments.utils import (
     to_fraction,
     repeat,
 )
-
 
 class RearrangePool(Pool):
     def __init__(self, input_channel, pool_scale: Fraction | tuple[Fraction, ...]):
@@ -408,25 +403,37 @@ class MIMModule(UNetTrainingModule):
             },
         }
 
+    @staticmethod
+    def patch_normalization(batch: Tensor, patch_size: tuple[int, ...]):
+        dt = batch.dtype
+        batch = batch.float()
+        dim = tuple(range(2, len(batch.shape)))
+        m = batch.mean(dim=dim, keepdim=True)
+        std = batch.std(dim=dim, unbiased=False, keepdim=True)
+        return ((batch - m) / (std + 1e-5)).to(dt)
+    
     def training_step(self, batch, _):
-        experiments.config.assertion = self.global_step < 10
         image = batch[image_key]  # (B,C,H,W,D)
         mask_size = elementwise_mul(image.shape[2:], self.mask_scale)
         if not all(is_integer(mask_size)):
             warn(
                 f"patch shape is {image.shape}, which product with mask_size {mask_size} is not integer"
             )
-        mask = self.mask_fn(image)  # (B,C,H,W,D)
+        mask_size = denominator(mask_size)
+        target = self.patch_normalization(image, mask_size)
+        mask = self.mask_fn(image)  # (B,1,H,W,D)
+        assert mask.shape[1] == 1
         # masked = image * (1 - mask) + self.mask_token * mask
         masked = image * (1 - mask)
+        unmasked = target * mask
 
         out = self.unet(masked)
         if self.deep_supervision:
             loss = 0
             for i in range(len(out)):
-                loss += self.head_weights[i] * self.loss(out[i], image)
+                loss += self.head_weights[i] * self.loss(out[i], target)
         else:
-            loss = self.loss(out, image)
+            loss = self.loss(out, target)
         hl = loss * mask
         hl = hl.sum() / (mask.sum() * image.shape[1] + 1e-5)
         vl = loss * (1 - mask)
@@ -438,6 +445,26 @@ class MIMModule(UNetTrainingModule):
         self.log("lr", self.optimizers().param_groups[0]["lr"], prog_bar=True)
         return {
             "loss": l,
-            "out": (out[0] if self.deep_supervision else out).detach().cpu(),
-            "masked": masked.detach().cpu(),
+            "out": (("image", "summary"), (out[0] if self.deep_supervision else out).detach().cpu()),
+            "unmasked": ("image", unmasked.detach().to("cpu")),
+            "batch": ("image", image.detach().to("cpu")),
+            "target": (("image", "summary"), target.detach().to("cpu"))
+        }
+
+    def test_step(self, batch, _):
+        image = batch[image_key]  # (B,C,H,W,D)
+        mask_size = elementwise_mul(image.shape[2:], self.mask_scale)
+        if not all(is_integer(mask_size)):
+            warn(
+                f"patch shape is {image.shape}, which product with mask_size {mask_size} is not integer"
+            )
+        mask = self.mask_fn(image)  # (B,C,H,W,D)
+        # masked = image * (1 - mask) + self.mask_token * mask
+        masked = image * (1 - mask)
+
+        out = self.unet(masked)
+        return {
+            "out": ("image", out.detach().to("cpu")),
+            "masked": ("image", masked.detach().to("cpu")),
+            "batch": ("image", image.detach().to("cpu")),
         }

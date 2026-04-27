@@ -1,82 +1,60 @@
-import math
-from typing import Callable, Iterator
+from torch import nn
+import torch.nn.functional as F
+import torch
 
-import lightning as L
-from torch import tensor
-import copy
+from experiments.nets.base import UNetHead, Block
+from experiments.nets.generic_modules import (
+    ConvBlock,
+    GlobalAveragePool,
+    LinearBlock,
+    RepeatingBlock,
+    SequentialBlock,
+)
 
-from experiments.nets.base import UNet, UNetHead
-from experiments.utils import AssertEq()
-from itertools import repeat
+
+class DinoHeadBlock(Block):
+    def __init__(self, input_channel, output_channel, *, dim):
+        self.lin = ConvBlock(input_channel, output_channel, kernel_size=1, dim=dim)
+        self.nonlin = nn.GELU()
+
+    def _forward(self, x):
+        return self.nonlin(self.lin(x))
+
+
 
 class DinoHead(UNetHead):
-    def __init__(self, input_channel, output_size: int | tuple[int, ...]):
-        super().__init__(input_channel)
+    """DinoHead
+    To Study Dense Feature, We use Conv1d instead of Linear
+    """
 
-
-Temperature = float | Iterator[float]
-
-
-def default_teacher_temperature() -> Iterator[float]:
-    i = 0
-    while True:
-        yield max(0.04 + 0.001 * i, 0.07)
-
-
-def default_lambda_scheduler(total_step: int) -> Iterator[float]:
-    lstart = 0.996
-    lend = 1.0
-    step = 0
-    while True:
-        yield lend + (lstart - lend) * (1 + math.cos(math.pi * total_step / step)) / 2
-
-        step += 1
-
-
-class DinoModule(L.LightningModule):
     def __init__(
         self,
-        unet: UNet,
-        temperature: tuple[Temperature, Temperature] = (
-            0.06,
-            default_teacher_temperature(),
-        ),
-        lambda_scheduler_fn: Callable[[int], Iterator[float]] = default_lambda_scheduler,
-        weights: float | tuple[float, ...] | None = None,
+        input_channel,
+        output_channel,
+        hidden_channel=2048,
+        bottleneck_channel=256,
+        *,
+        dim
     ):
-        super().__init__()
-        self.save_hyperparameters(ignore="unet")
-        self.student = unet
-        self.teacher = copy.deepcopy(unet)
-        self.student_temp, self.teacher_temp = temperature
-        if isinstance(self.student_temp, float):
-            self.student_temp = repeat(self.student_temp)
-        if isinstance(self.teacher_temp, float):
-            self.teacher_temp = repeat(self.teacher_temp)
-        self.lambda_scheduler_fn = lambda_scheduler_fn
-        self.weights = weights
+        super().__init__(input_channel)
+        self.output_channel = output_channel
+        self.hidden_channel = hidden_channel
+        self.bottleneck_channel = bottleneck_channel
+        self.dim = dim
 
-        if self.deep_supervision:
-            if isinstance(self.weights, tuple):
-                AssertEq()(len(self.unet.decoder.head), len(self.weights))
-            if self.weights is None:
-                self.weights = 2.0
-            if isinstance(self.weights, float):
-                self.weights = tuple(
-                    self.weights**i for i in range(len(self.unet.decoder.head))
-                )
-            self.weights = tensor(self.weights)
-            self.weights /= self.weights.sum()
-            self.register_buffer("head_weights", self.weights)
-        self.automatic_optimization = False
+        self.gap = GlobalAveragePool(output_size=1, dim=self.dim)
+        self.l = nn.Sequential(
+            DinoHeadBlock(self.input_channel, self.hidden_channel),
+            DinoHeadBlock(self.hidden_channel, self.hidden_channel),
+            ConvBlock(self.hidden_channel, self.bottleneck_channel),
+        )
+        self.output = nn.utils.parametrizations.weight_norm(
+            LinearBlock(self.bottleneck_channel, self.output_channel, bias=False)
+        )
 
-    def training_step(self, batch, _):
-        local_views = batch["local"]
-        global_views = batch["global"]
-        l = next(self.lambda_scheduler)
-        st = next(self.student_temp)
-        tt = next(self.teacher_temp)
-
-    def configure_optimizers(self):
-        self.lambda_scheduler = self.lambda_scheduler_fn(self.trainer.estimated_stepping_batches)
-        return super().configure_optimizers()
+    def _forward(self, x):
+        g = torch.flatten(self.gap(x), start_dim=1)
+        l = self.l(g)
+        n = F.normalize(l, dim=1)
+        o = self.output(n)
+        return o

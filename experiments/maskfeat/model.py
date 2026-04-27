@@ -425,10 +425,12 @@ class MaskFeatModule(UNetTrainingModule):
         self.log("visible loss", vl, logger=True, on_epoch=True)
         self.log("masked loss", hl, logger=True, on_epoch=True)
         self.log("lr", self.optimizers().param_groups[0]["lr"], prog_bar=True)
+        out = (out[0] if self.deep_supervision else out)
         return {
             "loss": l,
-            "out": (out[0] if self.deep_supervision else out).detach().cpu(),
-            "masked": masked.detach().cpu(),
+            "out": ("summary", out.detach().cpu()),
+            "target": ("summary", hog.detach().cpu()),
+            "diff": ("summary", (hog - out).detach().cpu())
         }
 
     def test_step(self, batch, _):
@@ -454,7 +456,7 @@ class MaskFeatModule(UNetTrainingModule):
             "loss": l,
             "mask loss": hl,
             "visible loss": vl,
-            "out": out.cpu(),
-            "gt": hog.cpu(),
-            "masked": masked.cpu(),
+            "out": ("summary", out.detach().cpu()),
+            "target": ("summary", hog.detach().cpu()),
+            "diff": ("summary", (hog - out).detach().cpu())
         }

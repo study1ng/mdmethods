@@ -58,7 +58,6 @@ class PlainSegmentation(PlannedExperiment):
 def train(args, meta):
     PlainSegmentation(args, meta)()
 
-# TODO: Fix hre
 class PlainSegInferencer(PlannedInferencer):
     def __init__(self, args, parsed):
         super().__init__(args, parsed)

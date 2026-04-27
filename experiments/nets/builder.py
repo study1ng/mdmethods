@@ -1,8 +1,10 @@
 import importlib
+from pprint import pprint
 from peft import LoraConfig, get_peft_model
-from sympy import false
 from experiments.nets.base import UNet
 from torch import nn
+import re
+
 
 def dl_module(net: str, expr: bool = True):
     pck, net = net.rsplit(".", 1)
@@ -129,22 +131,62 @@ class Builder(object):
                 dl = dl_pretrained_unet(action["ckpt"])
                 unet.load_state_dict(dl.state_dict(), strict=True)
             case "lora":
-                target_types = [dl_module(ty, False) for ty in action["target"]]
 
-                def skip(name: str, skips: list[str]) -> bool:
-                    for s in skips:
-                        if name.startswith(s):
+                def match(
+                    name: str,
+                    module: nn.Module,
+                    matches: list[tuple[str, tuple[type, ...]]],
+                ) -> bool:
+                    for n, tys in matches:
+                        if re.fullmatch(n, name) and type(module) in tys:
                             return True
                     return False
 
-                target_modules = [
-                    name
-                    for name, module in unet.named_modules()
-                    if type(module) in target_types and not skip(name, action["skips"])
-                ]
+                def parse_matches(matches):
+                    return [
+                        (splits[0], tuple(dl_module(ty, False) for ty in splits[1:]))
+                        for splits in [t.split("/") for t in matches]
+                    ]
+
+                def _findall(
+                    unet: nn.Module, matches: list[tuple[str, tuple[type, ...]]]
+                ):
+                    return list(
+                        filter(
+                            lambda t: match(t[0], t[1], matches), unet.named_modules()
+                        )
+                    )
+
+                def findall(unet: nn.Module, matches: list[str]):
+                    return _findall(
+                        unet,
+                        parse_matches(matches)
+                    )
+
+                def findall_with_check(unet, matches):
+                    ret = findall(unet, matches)
+                    if len(ret) == 0:
+                        print("of all following unet modules: ")
+                        for name, mod in unet.named_modules():
+                            print(name, type(mod))
+                        print("no one matches the expression", parse_matches(matches))
+                        raise AssertionError("No one module was found")
+                    return [t[0] for t in ret]
+
+                target_modules = findall_with_check(unet, action["target"])
+                print("lora target modules: ")
+                pprint(target_modules)
+                if "modules_to_save" in action["kwargs"]:
+                    action["kwargs"]["modules_to_save"] = findall_with_check(
+                        unet, action["kwargs"]["modules_to_save"]
+                    )
+                    print("lora modules to save: ")
+                    pprint(action["kwargs"]["modules_to_save"])
+
                 conf = LoraConfig(
                     target_modules=target_modules, *action["args"], **action["kwargs"]
                 )
+
                 unet = get_peft_model(unet, conf)
             case _:
                 raise NotImplementedError(

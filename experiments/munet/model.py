@@ -1,3 +1,6 @@
+import torch.utils
+import torch.utils.checkpoint
+
 from experiments.nets.builder import Builder
 from experiments.nets.ubimamba import BiMambaBlock
 from experiments.plan import Plan
@@ -109,9 +112,9 @@ class PositionalEncoding3D(nn.Module):
 class MUNetTrainingModule(UNetTrainingModule):
     def __init__(
         self,
-        builder: Builder,  # we need this builder is LoRA
+        builder: Builder,
         *,
-        weights,
+        weights = None,
         loss=DiceCELoss(
             include_background=False,
             to_onehot_y=True,
@@ -123,7 +126,32 @@ class MUNetTrainingModule(UNetTrainingModule):
         global_positional_encoding_proposition: float = 0.5,
         pos_blend=lambda a, b: a + b,
         plan: Plan,
+        checkpoint_level: int = 0,
     ):
+        """Training Module for MUNet
+
+        Parameters
+        ----------
+        builder : Builder
+            Builder to build
+        weights : None | float | list[float]
+            the weight which would be applied if deep_supervision, 
+            default to [1/2, 1/4, 1/8, ...], 
+            whose sum would be adjusted to 1. 
+            first element is about head
+        plan : Plan
+            plan
+        loss : loss, optional
+            loss function, by default DiceCELoss( include_background=False, to_onehot_y=True, softmax=True, batch=True, lambda_dice=1.0, lambda_ce=1.0, )
+        global_positional_encoding_proposition : float, optional
+            the proposition of positional encoding which represents the position the patch in whole image, by default 0.5
+        pos_blend : (Tensor, Tensor) -> Tensor, optional
+            the function to mix positional encoding and feature map, by default lambdaa
+        checkpoint_level : int, optional
+            the level of checkpointing, by default 0
+            higher then slower less memory consumption
+        """
+        self.checkpoint_level = checkpoint_level
         self.plan = plan
         self.overlap_scale = 0.5  # proposion of self.plan.patch_size
         self.overlap = tuple(int(self.overlap_scale * p) for p in self.plan.patch_size)
@@ -146,7 +174,7 @@ class MUNetTrainingModule(UNetTrainingModule):
 
     def configure_optimizers(self):
         self.optim = torch.optim.AdamW(
-            self.encoder.parameters(),
+            self.parameters(),
             lr=4e-4,
             eps=1e-5,
             weight_decay=1e-1,
@@ -223,8 +251,8 @@ class MUNetTrainingModule(UNetTrainingModule):
 
     def training_step(self, batch, _):
         image, label = batch[image_key], batch[label_key]
-        # image: the whole image which is on cpu
-        # label: the whole ground truth which is on cpu
+        # image: the whole image
+        # label: the whole ground truth
         # B, C, H, W, D, P: ボトルネックにおけるバッチサイズ, チャネル数, 高さ, 幅, 深さ, パッチ数
         skips_map = {}
         lasts = []
@@ -232,7 +260,10 @@ class MUNetTrainingModule(UNetTrainingModule):
         patches = self.split_to_patch(image, label)
 
         for patch_img, _, patch_pos in patches:
-            skips = self.unet.encoder(patch_img)
+            if self.checkpoint_level <= 1:
+                skips = self.unet.encoder(patch_img)
+            else:
+                skips = torch.utils.checkpoint.checkpoint(self.unet.encoder, patch_img, use_reentrant=False)
             skips_map[patch_pos] = skips[:-1]
             last = skips[-1]
             h, w, d = last.shape[2:]
@@ -249,7 +280,10 @@ class MUNetTrainingModule(UNetTrainingModule):
         lasts, _ = pack(lasts, "b * c")  # (B, HWDP, C)
         blended, _ = pack(blend, "b * c")  # (B, HWDP, C)
         blended_c = blended.contiguous()  # (B, HWDP, C)
-        bottleneck = self.bottleneck(blended_c)  # (B, HWDP, C)
+        if self.checkpoint_level <= 0:
+            bottleneck = self.bottleneck(blended_c)  # (B, HWDP, C)
+        else:
+            bottleneck = torch.utils.checkpoint.checkpoint(self.bottleneck, blended_c, use_reentrant=False)
         bottleneck += lasts  # 残差接続: (B, HWDP, C)
         reshaped = rearrange(
             bottleneck,
@@ -261,7 +295,10 @@ class MUNetTrainingModule(UNetTrainingModule):
         )
         all_loss = 0
         for skip, _, patch_label, __ in self.to_skips(skips_map, reshaped, patches):
-            out = self.decoder(skip)
+            if self.checkpoint_level <= 1:
+                out = self.decoder(skip)
+            else:
+                out = torch.utils.checkpoint.checkpoint(self.unet.decoder, skip, use_reentrant=False)
             loss = self.loss(out, patch_label)
             all_loss += loss
         all_loss /= len(patches)
@@ -280,7 +317,7 @@ class MUNetTrainingModule(UNetTrainingModule):
         Returns:
             Generator[(skip feature maps, patch image, patch label, patch position)]
         """
-        assert len(skips) == len(reshaped) and len(reshaped) == len(
+        assert len(skips_map) == len(reshaped) and len(reshaped) == len(
             patches
         ), "Lengths of inputs must match."
 

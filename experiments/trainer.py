@@ -1,8 +1,7 @@
 from pprint import pprint
-from lightning import Callback, LightningDataModule, Trainer
+from lightning import LightningDataModule, Trainer
 from experiments import ArgumentAdaptor
 from abc import abstractmethod
-from experiments.config import default_training_config, label_key, image_key
 from experiments.nets.builder import Builder
 from experiments.plan import Plan
 from experiments.utils import nowstring, resolved_path
@@ -12,8 +11,8 @@ from pathlib import Path
 from experiments.nets.base import UNet
 import torch
 from torch import tensor, Tensor
-from monai.transforms import SaveImaged, SpatialResample
-from monai.data import decollate_batch, MetaTensor
+from experiments.callbacks import LogCallback
+from experiments.config import default_training_config
 
 
 class UNetTrainingModule(L.LightningModule):
@@ -81,10 +80,14 @@ class Experiment(ArgumentAdaptor):
         config = default_training_config(
             save_path=self.save_path, meta=self.meta, devices=self.devices
         )
+        config = self.configure_trainer(config)
         print("trainer config: ", config)
         tr = Trainer(**config)
         return tr
 
+    def configure_trainer(self, config):
+        return config
+    
     @abstractmethod
     def _build_module(self) -> UNetTrainingModule: ...
 
@@ -136,96 +139,7 @@ class PlannedExperiment(Experiment):
         self.plan = Plan(self.args.plan_path)
 
 
-def _invert_label(label: MetaTensor | Tensor, transform_info):
-    cls = transform_info["class"]
-    ext = transform_info["extra_info"]
-    match cls:
-        case "CropForeground":
-            if "pad_info" in ext:
-                label = _invert_label(label, ext["pad_info"])
-            orig = transform_info["orig_size"]
-            cropped = ext["cropped"]
-            pos = [
-                cropped[i] if i % 2 == 0 else orig[i // 2] - cropped[i]
-                for i in range(len(cropped))
-            ]
-            pos = [0, label.shape[0]] + pos
-            label_padded = torch.zeros(
-                (label.shape[0], *orig), dtype=label.dtype, device=label.device
-            )
-            indices = tuple(slice(pos[i], pos[i + 1]) for i in range(0, len(pos), 2))
-            label_padded[indices] = label
-            return label_padded
 
-        case "SpatialPad" | "Pad":
-            padded = ext["padded"]
-            indices = tuple(
-                slice(pad[0], -pad[1] if pad[1] > 0 else None) for pad in padded
-            )
-            return label[indices]
-
-        case "SpatialResample":
-            a = ext["src_affine"]
-            ia = torch.inverse(a)
-            resampler = SpatialResample(
-                mode=ext["mode"],
-                align_corners=ext["align_corners"],
-                padding_mode=ext["padding_mode"],
-            )
-            output_data = resampler(
-                img=label,
-                dst_affine=ia,
-                spatial_size=transform_info["orig_size"],
-            )
-            return output_data
-
-        case _:
-            raise NotImplementedError(f"{cls} is not implemented")
-
-
-def invert_label(
-    item: dict[str, MetaTensor | Tensor], image_key=image_key, label_key=label_key
-) -> MetaTensor:
-    image = item[image_key]
-    label = item[label_key]
-    transforms = image.applied_operations
-    for transform_info in reversed(transforms):
-        try:
-            label = _invert_label(label, transform_info)
-        except Exception as e:
-            print(label.shape)
-            pprint(transform_info)
-            raise e from e
-    item[label_key] = MetaTensor(label, meta=item[image_key].meta).to(torch.int16)
-    return item
-
-
-class InferenceCallback(Callback):
-    def __init__(
-        self,
-        save_path,
-        label_key=label_key,
-        image_key=image_key,
-    ):
-        super().__init__()
-        self.save_path = save_path
-        self.label_key = label_key
-        self.image_key = image_key
-        self.saver = SaveImaged(
-            output_dir=self.save_path, output_postfix="", keys=self.label_key
-        )
-        # Invertdはidで引っかかるので手動で逆変換
-
-    def on_test_batch_end(
-        self, trainer, pl_module, outputs, batch, batch_idx, dataloader_idx=0
-    ):
-        out = torch.argmax(outputs, dim=1, keepdim=True)
-        batch[self.label_key] = out
-        for item in decollate_batch(batch):
-            item = invert_label(
-                item, image_key=self.image_key, label_key=self.label_key
-            )
-            self.saver(item)
 
 
 class Inferencer(ArgumentAdaptor):
@@ -278,7 +192,7 @@ class PlannedInferencer(Inferencer):
 
     def _build_trainer(self):
         tr = Trainer(
-            callbacks=[InferenceCallback(self.save_path)], devices=self.devices
+            callbacks=[LogCallback(self.save_path)], devices=self.devices
         )
         return tr
 

@@ -1,6 +1,4 @@
 from pathlib import Path
-from monai.transforms import SaveImaged
-from lightning import Callback
 
 
 image_key = "image"
@@ -19,6 +17,7 @@ def default_loggers(save_path: Path, experiment_name: str):
 
 def default_callbacks(save_path: Path):
     from lightning.pytorch.callbacks import ModelCheckpoint
+    from experiments.callbacks import LogCallback
 
     return [
         ModelCheckpoint(
@@ -27,7 +26,8 @@ def default_callbacks(save_path: Path):
             save_last=True,
             save_top_k=-1,
             every_n_epochs=10,
-        )
+        ),
+        LogCallback(save_path)
     ]
 
 

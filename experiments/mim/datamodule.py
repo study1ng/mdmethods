@@ -85,11 +85,34 @@ class SSLDataModule(L.LightningDataModule):
             transforms = augmentation_transforms(self.keys, self.plan)
             self.train_dataset = Dataset(imgs, transforms)
 
+        if stage == "test":
+            assert self.preprocessed_dir.exists(), f"the preprocessed img dir {self.preprocessed_dir} do not exists"
+
+            imgs = [
+                {image_key: img, "name": img.name.split(".")[0].split("_")[0]}
+                for img in self.preprocessed_dir.iterdir()
+                if img.suffix == ".gz"
+            ]
+
+            transforms = augmentation_transforms(self.keys, self.plan)
+            self.test_dataset = Dataset(imgs, transforms)
+
+
     def train_dataloader(self):
         return DataLoader(
             self.train_dataset,
             batch_size=self.batch_size,
             shuffle=True,
+            num_workers=self.num_workers,
+            pin_memory=True,
+        )
+
+
+    def test_dataloader(self):
+        return DataLoader(
+            self.test_dataset,
+            batch_size=1,
+            shuffle=False,
             num_workers=self.num_workers,
             pin_memory=True,
         )

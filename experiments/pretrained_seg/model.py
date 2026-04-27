@@ -94,9 +94,10 @@ class SegmentationModule(UNetTrainingModule):
             raise AssertionError("loss < 0")
         self.log("training loss", loss, prog_bar=True, on_step=True, on_epoch=True)
         self.log("lr", self.optimizers().param_groups[0]["lr"], prog_bar=True)
+        out = (out[0] if self.deep_supervision else out)
         return {
             "loss": loss,
-            "out": (out[0] if self.deep_supervision else out).detach().cpu(),
+            "out": ("label", out.detach().cpu()),
         }
 
     def validation_step(self, batch, _):

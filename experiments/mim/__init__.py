@@ -2,11 +2,10 @@ from experiments.mim.preprocess import PlannedSSLPreprocessor as Preprocessor
 from experiments.mim.datamodule import SSLDataModule as DataModule
 from experiments.mim.model import MIMModule as Model
 from experiments.nets.builder import Builder
-from experiments.trainer import PlannedExperiment
+from experiments.trainer import PlannedExperiment, PlannedInferencer
 from experiments.prune import SpacingShapeStrictPruner as Pruner
 from experiments.analyze import CTAnalyzer as Analyzer
 import torch
-
 
 
 def prune(args, meta):
@@ -32,16 +31,34 @@ class MIM(PlannedExperiment):
         return DataModule(self.data, self.plan)
 
     def _build_module(self):
-        builder = Builder().based_on_plan(
-            "nets.ubimamba.UBiMamba",
-            self.plan,
-            input_channel=1,
-            output_channel=1,
-            deep_supervision=True,
-        ).to_params()
+        builder = (
+            Builder()
+            .based_on_plan(
+                "nets.ubimamba.UBiMamba",
+                self.plan,
+                input_channel=1,
+                output_channel=1,
+                deep_supervision=True,
+            )
+            .to_params()
+        )
         lm = Model(builder, mask_ratio=0.6)
         return lm
 
 
 def train(args, meta):
     MIM(args, meta)()
+
+
+class MIMInferencer(PlannedInferencer):
+    def _build_data_module(self):
+        return DataModule(self.preprocessed, self.plan)
+
+    def _build_module(self):
+        builder = Builder().based_on_ckpt(self.ckpt_path).to_params()
+        lm = Model(builder, mask_ratio=0.6)
+        return lm
+
+
+def inference(args, meta):
+    MIMInferencer(args, meta)()
