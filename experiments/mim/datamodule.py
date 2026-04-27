@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 import numpy as np
 
@@ -61,12 +62,12 @@ class SSLDataModule(L.LightningDataModule):
     """
     def __init__(
         self,
-        preprocessed_dir: str | Path,
+        preprocessed: str | Path,
         plan: Plan,
         num_workers: int = 4,
     ):
         super().__init__()
-        self.preprocessed_dir = Path(preprocessed_dir)
+        self.preprocessed = Path(preprocessed)
         self.plan = plan
         self.num_workers = num_workers
         self.keys = [image_key]
@@ -74,11 +75,11 @@ class SSLDataModule(L.LightningDataModule):
 
     def setup(self, stage: str | None = None):
         if stage == "fit" or stage is None:
-            assert self.preprocessed_dir.exists(), f"the preprocessed img dir {self.preprocessed_dir} do not exists"
+            assert self.preprocessed.exists(), f"the preprocessed img dir {self.preprocessed} do not exists"
 
             imgs = [
                 {image_key: img, "name": img.name.split(".")[0].split("_")[0]}
-                for img in self.preprocessed_dir.iterdir()
+                for img in self.preprocessed.iterdir()
                 if img.suffix == ".gz"
             ]
 
@@ -86,11 +87,11 @@ class SSLDataModule(L.LightningDataModule):
             self.train_dataset = Dataset(imgs, transforms)
 
         if stage == "test":
-            assert self.preprocessed_dir.exists(), f"the preprocessed img dir {self.preprocessed_dir} do not exists"
+            assert self.preprocessed.exists(), f"the preprocessed img dir {self.preprocessed} do not exists"
 
             imgs = [
                 {image_key: img, "name": img.name.split(".")[0].split("_")[0]}
-                for img in self.preprocessed_dir.iterdir()
+                for img in self.preprocessed.iterdir()
                 if img.suffix == ".gz"
             ]
 

@@ -97,6 +97,8 @@ class SegmentationModule(UNetTrainingModule):
         out = (out[0] if self.deep_supervision else out)
         return {
             "loss": loss,
+            "image": ("image", image.detach().cpu()),
+            "gt": ("image", label.detach().cpu()),
             "out": ("label", out.detach().cpu()),
         }
 

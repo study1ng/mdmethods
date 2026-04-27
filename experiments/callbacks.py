@@ -2,14 +2,18 @@ import lightning as L
 from lightning.pytorch.callbacks import Callback
 import nibabel
 from torch import Tensor
+from torch.linalg import inv
 from monai.data import decollate_batch, MetaTensor
 import torch
-from monai.transforms import SpatialResample, SaveImage, SaveImaged
+from monai.transforms import SpatialResample, SaveImage, SaveImaged, Rotate, Zoom
+from monai import transforms
 from pprint import pprint
 from experiments.config import label_key, image_key
 from experiments.utils.wraputils import element_wise
 
 def _invert_label(label: MetaTensor | Tensor, transform_info):
+    if not isinstance(label, MetaTensor):
+        label = MetaTensor(label)
     cls = transform_info["class"]
     ext = transform_info["extra_info"]
     match cls:
@@ -51,6 +55,37 @@ def _invert_label(label: MetaTensor | Tensor, transform_info):
                 spatial_size=transform_info["orig_size"],
             )
             return output_data
+        
+        case "CenterSpatialCrop" | "RandSpatialCrop":
+            cropped = ext["cropped"]
+            orig = transform_info["orig_size"]
+            pos = [
+                cropped[i] if i % 2 == 0 else orig[i // 2] - cropped[i]
+                for i in range(len(cropped))
+            ]
+            pos = [0, label.shape[0]] + pos
+            label_padded = torch.zeros(
+                (label.shape[0], *orig), dtype=label.dtype, device=label.device
+            )
+            indices = tuple(slice(pos[i], pos[i + 1]) for i in range(0, len(pos), 2))
+            label_padded[indices] = label
+            return label_padded
+        
+        case "RandRotated" | "RandFlipd" | "RandZoomd" | "RandZoom" | "RandRotate":
+            if "class" in ext:
+                return _invert_label(label, ext)
+            return label
+        
+        case "Flip":
+            axes = ext["axes"]
+            axes = (axes,) if isinstance(axes, int) else axes
+            return torch.flip(label, axes)
+            
+        case "Zoom":
+            return Zoom.inverse_transform(None, label, transform_info)
+        
+        case "Rotate":
+            return Rotate.inverse_transform(None, label, transform_info)
 
         case _:
             raise NotImplementedError(f"{cls} is not implemented")
@@ -77,13 +112,21 @@ class LogCallback(Callback):
     def __init__(
         self,
         save_path,
+        *,
         label_key=label_key,
         image_key=image_key,
+        on_train_end = True,
+        on_val_end = True,
+        on_test_end = True,
     ):
         super().__init__()
         self.save_path = save_path
         self.label_key = label_key
         self.image_key = image_key
+        self.on_train_end = on_train_end
+        self.on_val_end = on_val_end
+        self.on_test_end = on_test_end
+
 
     def _print_summary(self, k, v):
         """t == 'summary' の際に統計指標を計算して出力するヘルパーメソッド"""
@@ -128,6 +171,8 @@ class LogCallback(Callback):
             bk = self.label_key if action == "label" else self.image_key
             batch[bk] = v
             for item in decollate_batch(batch):
+                if action == "label":
+                    item = invert_label(item, image_key=self.image_key, label_key=self.label_key)
                 orig = item[bk].meta.get("filename_or_obj", "unknown.nii.gz")
                 if isinstance(orig, str):
                     origstem = orig.split("/")[-1].split(".")[0]
@@ -136,8 +181,6 @@ class LogCallback(Callback):
                 item[bk].meta["filename_or_obj"] = f"{epoch}_{origstem}_{k}.nii.gz"
                 if item[bk].dtype == torch.bfloat16:
                     item[bk] = item[bk].to(torch.float32)
-                if action == "label":
-                    item = invert_label(item, image_key=self.image_key, label_key=self.label_key)
             SaveImage(output_dir=self.save_path, output_postfix="", separate_folder=False)(item[bk])
         
         _process(action)
@@ -150,12 +193,23 @@ class LogCallback(Callback):
 
 
     def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
+        if not self.on_train_end:
+            return
         if batch_idx + 1 != trainer.num_training_batches:
             return
         self.process_action(trainer, batch, outputs)
 
+    def on_validation_batch_end(self, trainer, pl_module, outputs, batch, batch_idx, dataloader_idx = 0):
+        if not self.on_val_end:
+            return
+        if batch_idx + 1 != trainer.num_training_batches:
+            return
+        self.process_action(trainer, batch, outputs)
 
     def on_test_batch_end(
         self, trainer, pl_module, outputs: dict[str, tuple[str, MetaTensor]], batch, batch_idx, dataloader_idx=0
     ):
+        if not self.on_test_end:
+            return
+        # これは推論/保存も兼ねているのですべてのパッチに対して行う.
         self.process_action(trainer, batch, outputs)
