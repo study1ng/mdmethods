@@ -1,0 +1,22 @@
+services:
+  app:
+    build:
+      context: ${CONTEXT}
+      dockerfile: ${CONTEXT}/.container/Dockerfile
+      args:
+        UID: ${UID}
+        GID: ${GID}
+        USER_NAME: ${USER_NAME}
+    image: mdmethods
+    tty: true
+    volumes:
+      - ${HOME}:/homes/${USER_NAME}
+      - /${DATA_DIR}:/${DATA_DIR}
+    shm_size: 64gb
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
