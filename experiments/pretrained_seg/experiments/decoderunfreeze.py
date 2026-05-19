@@ -19,8 +19,6 @@ class DecoderUnfreezeFinetuning(BaseFinetuning):
 
 class DecoderUnfreeze(PlainSegmentation):
     def configure_trainer(self, config):
-        config["max_epochs"] = 100
-        config["min_epochs"] = 100
         config["callbacks"].append(DecoderUnfreezeFinetuning())
         return config
 

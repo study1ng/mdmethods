@@ -1,6 +1,5 @@
 from experiments.nets.builder import Builder
 from experiments.prune import NoPruner as Pruner
-from experiments.munet.preprocess import PlannedPreprocessor as Preprocessor
 from experiments.trainer import PlannedExperiment
 from experiments.utils import resolved_path
 from pathlib import Path
@@ -21,10 +20,6 @@ def prune(args):
 
 def analyze(args):
     Analyzer(args)()
-
-
-def preprocess(args):
-    Preprocessor(args)()
 
 
 class ZeroshotEncoderFinetuning(BaseFinetuning):

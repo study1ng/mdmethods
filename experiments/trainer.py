@@ -45,6 +45,53 @@ class UNetTrainingModule(L.LightningModule):
     def on_save_checkpoint(self, checkpoint):
         checkpoint[self.CKPT_BUILDER_KEY] = self.builder
 
+    def configure_optimizers(self):
+        optim = torch.optim.AdamW(
+            self.unet.parameters(),
+            lr=4e-4,
+            eps=1e-5,
+            weight_decay=1e-1,
+            betas=(0.9, 0.95),
+        )
+        total_steps = self.trainer.estimated_stepping_batches
+        endless = total_steps == float("inf")
+        warmup_steps = min(total_steps, 250 * 1000) // 10
+        scheduler = torch.optim.lr_scheduler.SequentialLR(
+            optim,
+            [
+                torch.optim.lr_scheduler.LinearLR(
+                    optim,
+                    start_factor=1e-10,
+                    end_factor=1.0,
+                    total_iters=warmup_steps,
+                ),
+                torch.optim.lr_scheduler.CosineAnnealingLR(
+                    optim, T_max=total_steps - warmup_steps, eta_min=1e-5
+                ),
+            ],
+            milestones=[warmup_steps],
+        ) if not endless else torch.optim.lr_scheduler.SequentialLR(
+            optim, [
+                torch.optim.lr_scheduler.LinearLR(
+                    optim,
+                    start_factor=1e-10,
+                    end_factor=1.0,
+                    total_iters=warmup_steps,
+                ),
+                torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
+                    optim, T_0=100000, T_mult=2, eta_min=1e-5,
+                )
+            ],
+            milestones=[warmup_steps],
+        )
+        return {
+            "optimizer": optim,
+            "lr_scheduler": {
+                "scheduler": scheduler,
+                "interval": "step",
+            },
+        }
+
 def dl_pretrained_unet(
     pretrained_module_path: Path | str,
 ) -> UNet:
@@ -85,7 +132,9 @@ class Experiment(ArgumentAdaptor):
         tr = Trainer(**config)
         return tr
 
-    def configure_trainer(self, config):
+    def configure_trainer(self, config: dict):
+        config["max_epochs"] = self.epochs
+        config["min_epochs"] = self.epochs
         return config
     
     @abstractmethod
@@ -106,6 +155,7 @@ class Experiment(ArgumentAdaptor):
         parser.add_argument("save_path", type=resolved_path)
         parser.add_argument("-d", "--devices", type=int, default=[0], nargs="+")
         parser.add_argument("-c", "--ckpt", default=None, type=resolved_path)
+        parser.add_argument("-e", "--epochs", default=None, type=int)
         return parser
 
     def parse_args(self, args):
@@ -117,6 +167,7 @@ class Experiment(ArgumentAdaptor):
         self.save_path = self.save_path / nowstring()
         self.devices = self.args.devices
         self.ckpt = self.args.ckpt
+        self.epochs = self.args.epochs
 
     def __call__(self):
         match self.meta.method:

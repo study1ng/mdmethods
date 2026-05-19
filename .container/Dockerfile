@@ -25,7 +25,11 @@ ARG USER_NAME
 RUN groupadd -g ${GID} ${USER_NAME} && \
     useradd -m -u ${UID} -g ${GID} -s /bin/bash ${USER_NAME}
 
+# /opt/venv を有効化（パスを通す）
 ENV PATH="/opt/venv/bin:$PATH"
+ENV VIRTUAL_ENV="/opt/venv"
+
+# uv sync 時にプロジェクト内（.venv）ではなく /opt/venv を使うように指定
 ENV UV_PROJECT_ENVIRONMENT="/opt/venv"
 
 RUN python3.12 -m venv /opt/venv && \
@@ -34,5 +38,6 @@ RUN python3.12 -m venv /opt/venv && \
 USER ${USER_NAME}
 WORKDIR /homes/${USER_NAME}/working/mdmethods
 
-COPY pyproject.toml uv.lock ./
-RUN uv sync
+COPY --chown=${USER_NAME}:${GID} pyproject.toml uv.lock ./
+RUN uv sync && \
+    uv pip install "causal-conv1d==1.5.3.post1" "mamba-ssm==2.2.6.post3" --no-build-isolation --no-binary causal-conv1d,mamba-ssm --no-cache-dir --extra-index-url https://download.pytorch.org/whl/cu121 --reinstall --no-deps

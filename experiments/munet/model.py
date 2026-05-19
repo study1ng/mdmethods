@@ -171,40 +171,6 @@ class MUNetTrainingModule(UNetTrainingModule):
         self.pe = PositionalEncoding3D(self.unet.skip_channels[-1] - global_pe_channel)
         self.pos_blend = pos_blend
 
-
-    def configure_optimizers(self):
-        self.optim = torch.optim.AdamW(
-            self.parameters(),
-            lr=4e-4,
-            eps=1e-5,
-            weight_decay=1e-1,
-            betas=(0.9, 0.95),
-        )
-        total_steps = self.trainer.estimated_stepping_batches
-        warmup_steps = total_steps // 10
-        self.scheduler = torch.optim.lr_scheduler.SequentialLR(
-            self.optim,
-            [
-                torch.optim.lr_scheduler.LinearLR(
-                    self.optim,
-                    start_factor=1e-10,
-                    end_factor=1.0,
-                    total_iters=warmup_steps,
-                ),
-                torch.optim.lr_scheduler.CosineAnnealingLR(
-                    self.optim, T_max=total_steps - warmup_steps, eta_min=1e-5
-                ),
-            ],
-            milestones=[warmup_steps],
-        )
-        return {
-            "optimizer": self.optim,
-            "lr_scheduler": {
-                "scheduler": self.scheduler,
-                "interval": "step",
-            },
-        }
-
     def split_to_patch(
         self, image: torch.Tensor, label: torch.Tensor
     ) -> tuple[tuple[torch.Tensor, torch.Tensor, tuple[int, ...]], ...]:

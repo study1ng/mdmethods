@@ -1,4 +1,3 @@
-from experiments.mim.preprocess import PlannedSSLPreprocessor as Preprocessor
 from experiments.mim.datamodule import SSLDataModule as DataModule
 from experiments.mim.model import MIMModule as Model
 from experiments.nets.builder import Builder
@@ -16,10 +15,6 @@ def prune(args, meta):
 
 def analyze(args, meta):
     Analyzer(args, meta)()
-
-
-def preprocess(args, meta):
-    Preprocessor(args, meta)()
 
 
 class MIM(PlannedExperiment):

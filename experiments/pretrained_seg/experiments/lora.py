@@ -33,8 +33,6 @@ class LoRA(PlainSegmentation):
         config = default_training_config(
             save_path=self.save_path, meta=self.meta, devices=self.devices
         )
-        config["max_epochs"] = 100
-        config["min_epochs"] = 100
         print("trainer config: ", config)
         tr = Trainer(**config)
         return tr

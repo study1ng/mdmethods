@@ -4,7 +4,6 @@ from experiments.prune import NoPruner as Pruner
 from experiments.analyze import CTAnalyzer as Analyzer
 from experiments.pretrained_seg.datamodule import CropSegDataModule as DataModule
 from experiments.pretrained_seg.model import SegmentationModule as Model
-from experiments.munet.preprocess import PlannedPreprocessor as Preprocessor
 import torch
 from experiments.utils.fsutils import resolved_path
 
@@ -15,10 +14,6 @@ def prune(args, meta):
 
 def analyze(args, meta):
     Analyzer(args, meta)()
-
-
-def preprocess(args, meta):
-    Preprocessor(args, meta)()
 
 
 class PlainSegmentation(PlannedExperiment):

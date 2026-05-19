@@ -363,38 +363,6 @@ class MaskFeatModule(UNetTrainingModule):
     def forward(self, x: Tensor):
         return self.unet(x)
 
-    def configure_optimizers(self):
-        optim = torch.optim.AdamW(
-            self.unet.parameters(),
-            lr=4e-4,
-            eps=1e-5,
-            weight_decay=1e-1,
-            betas=(0.9, 0.95),
-        )
-        total_steps = self.trainer.estimated_stepping_batches
-        warmup_steps = min(total_steps, 1000) // 10
-        scheduler = torch.optim.lr_scheduler.SequentialLR(
-            optim,
-            [
-                torch.optim.lr_scheduler.LinearLR(
-                    optim,
-                    start_factor=1e-10,
-                    end_factor=1.0,
-                    total_iters=warmup_steps,
-                ),
-                torch.optim.lr_scheduler.CosineAnnealingLR(
-                    optim, T_max=total_steps - warmup_steps, eta_min=1e-5
-                ),
-            ],
-            milestones=[warmup_steps],
-        )
-        return {
-            "optimizer": optim,
-            "lr_scheduler": {
-                "scheduler": scheduler,
-                "interval": "step",
-            },
-        }
 
     def training_step(self, batch, _):
         image = batch[image_key]

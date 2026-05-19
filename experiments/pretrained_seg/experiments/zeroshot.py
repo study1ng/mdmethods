@@ -25,8 +25,6 @@ class ZeroshotFinetuning(BaseFinetuning):
 
 class Zeroshot(PlainSegmentation):
     def configure_trainer(self, config):
-        config["max_epochs"] = 100
-        config["min_epochs"] = 100
         config["callbacks"].append(ZeroshotFinetuning())
         return config
 

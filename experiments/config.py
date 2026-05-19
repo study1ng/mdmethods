@@ -42,8 +42,6 @@ def default_training_config(save_path: Path, meta, devices):
             ),
         ),
         "devices": devices,
-        "max_epochs": 1000,
-        "min_epochs": 1000,
         "limit_train_batches": 250,
         "default_root_dir": save_path,
         "precision": "bf16-mixed",
