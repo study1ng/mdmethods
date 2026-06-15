@@ -338,15 +338,14 @@ class MIMModule(UNetTrainingModule):
         weights: float | tuple[float, ...] | None = None,
         loss_fn=partial(nn.L1Loss, reduction="none"),
         visible_loss_weight: float = 0.0,
-        *,
-        conv_position: ConvPosition = ConvPosition.default(),
+        **kwargs,
     ):
         super().save_hyperparameters()
         builder = (
             Builder.from_params(builder)
-            .reinitialize(head, conv_position=conv_position)
+            .reinitialize(head, **kwargs)
             .to_params()
-        )
+        ) if head else builder
         super().__init__(builder, weights=weights)
         self.mask_ratio = mask_ratio
         self.mask_scale = mask_scale
@@ -379,59 +378,119 @@ class MIMModule(UNetTrainingModule):
         std = batch.std(dim=dim, unbiased=False, keepdim=True)
         return ((batch - m) / (std + 1e-5)).to(dt)
     
-    def training_step(self, batch, _):
-        image = batch[image_key]  # (B,C,H,W,D)
+    def _build_target(self, image: Tensor) -> Tensor:
         mask_size = elementwise_mul(image.shape[2:], self.mask_scale)
         if not all(is_integer(mask_size)):
             warn(
                 f"patch shape is {image.shape}, which product with mask_size {mask_size} is not integer"
             )
         mask_size = denominator(mask_size)
-        target = self.patch_normalization(image, mask_size)
-        mask = self.mask_fn(image)  # (B,1,H,W,D)
+        return self.patch_normalization(image, mask_size)
+
+    def _build_mask(self, image: Tensor) -> Tensor:
+        mask = self.mask_fn(image)  # (B, 1, *spatial)
         assert mask.shape[1] == 1
+        return mask
+
+    def _apply_mask(self, image: Tensor, mask: Tensor) -> Tensor:
         # masked = image * (1 - mask) + self.mask_token * mask
-        masked = image * (1 - mask)
-        unmasked = target * mask
+        return image * (1 - mask)
+
+    @staticmethod
+    def _iter_outputs(out: Tensor | list[Tensor] | tuple[Tensor, ...]) -> tuple[Tensor, ...]:
+        if isinstance(out, (list, tuple)):
+            return tuple(out)
+        return (out,)
+
+    def _output_weight(self, index: int, n_outputs: int) -> float | Tensor:
+        if self.deep_supervision and n_outputs > 1:
+            return self.head_weights[index]
+        return 1.0
+
+    def _target_for_prediction(self, target: Tensor, pred: Tensor, index: int) -> Tensor:
+        """Hook for subclasses. Default: prediction already has target resolution."""
+        return target
+
+    def _mask_for_prediction(self, mask: Tensor, pred: Tensor, index: int) -> Tensor:
+        """Hook for subclasses. Default: prediction already has mask resolution."""
+        return mask
+
+    def _reduce_masked_visible_loss(
+        self,
+        elementwise_loss: Tensor,
+        mask: Tensor,
+        channel_count: int,
+    ) -> tuple[Tensor, Tensor, Tensor]:
+        hl = elementwise_loss * mask
+        hl = hl.sum() / (mask.sum() * channel_count + 1e-5)
+        vl = elementwise_loss * (1 - mask)
+        vl = vl.sum() / ((1 - mask).sum() * channel_count + 1e-5)  # visible loss
+        total = vl * self.visible_loss_weight + hl * (1 - self.visible_loss_weight)
+        return total, vl, hl
+
+    def _training_loss_components(
+        self,
+        out: Tensor | list[Tensor] | tuple[Tensor, ...],
+        target: Tensor,
+        mask: Tensor,
+    ) -> tuple[Tensor, Tensor, Tensor]:
+        """Return total, visible, and hidden/masked losses.
+
+        Default behavior intentionally matches the original implementation:
+        build one weighted elementwise loss map across all deep-supervision
+        outputs, then reduce it with the full-resolution mask once.
+        """
+        outputs = self._iter_outputs(out)
+        elementwise_loss = target.new_tensor(0.0)
+        for i, pred in enumerate(outputs):
+            target_i = self._target_for_prediction(target, pred, i)
+            weight = self._output_weight(i, len(outputs))
+            elementwise_loss = elementwise_loss + weight * self.loss(pred, target_i)
+        return self._reduce_masked_visible_loss(
+            elementwise_loss=elementwise_loss,
+            mask=mask,
+            channel_count=target.shape[1],
+        )
+
+    def _summary_output(self, out: Tensor | list[Tensor] | tuple[Tensor, ...]) -> Tensor:
+        return self._iter_outputs(out)[0]
+
+    def _summary_target(
+        self,
+        target: Tensor,
+        out: Tensor | list[Tensor] | tuple[Tensor, ...],
+    ) -> Tensor:
+        pred = self._summary_output(out)
+        return self._target_for_prediction(target, pred, 0)
+
+    def _summary_unmasked(
+        self,
+        target: Tensor,
+        mask: Tensor,
+        out: Tensor | list[Tensor] | tuple[Tensor, ...],
+    ) -> Tensor:
+        pred = self._summary_output(out)
+        target_i = self._target_for_prediction(target, pred, 0)
+        mask_i = self._mask_for_prediction(mask, pred, 0)
+        return target_i * mask_i
+    
+    def training_step(self, batch, _):
+        image = batch[image_key]  # (B,C,H,W,D)
+        target = self._build_target(image)
+        mask = self._build_mask(image)
+        masked = self._apply_mask(image, mask)
 
         out = self.unet(masked)
-        if self.deep_supervision:
-            loss = 0
-            for i in range(len(out)):
-                loss += self.head_weights[i] * self.loss(out[i], target)
-        else:
-            loss = self.loss(out, target)
-        hl = loss * mask
-        hl = hl.sum() / (mask.sum() * image.shape[1] + 1e-5)
-        vl = loss * (1 - mask)
-        vl = vl.sum() / ((1 - mask).sum() * image.shape[1] + 1e-5)  # visible loss
-        l = vl * self.visible_loss_weight + hl * (1 - self.visible_loss_weight)
+        l, vl, hl = self._training_loss_components(out, target, mask)
+
         self.log("training loss", l, prog_bar=True, on_step=True, on_epoch=True)
         self.log("visible loss", vl, logger=True, on_epoch=True)
         self.log("masked loss", hl, logger=True, on_epoch=True)
         self.log("lr", self.optimizers().param_groups[0]["lr"], prog_bar=True)
         return {
             "loss": l,
-            "out": (("image", "summary"), (out[0] if self.deep_supervision else out).detach().cpu()),
-            "unmasked": ("image", unmasked.detach().to("cpu")),
-            "batch": ("image", image.detach().to("cpu")),
-            "target": (("image", "summary"), target.detach().to("cpu"))
-        }
-
-    def test_step(self, batch, _):
-        image = batch[image_key]  # (B,C,H,W,D)
-        mask_size = elementwise_mul(image.shape[2:], self.mask_scale)
-        if not all(is_integer(mask_size)):
-            warn(
-                f"patch shape is {image.shape}, which product with mask_size {mask_size} is not integer"
-            )
-        mask = self.mask_fn(image)  # (B,C,H,W,D)
-        # masked = image * (1 - mask) + self.mask_token * mask
-        masked = image * (1 - mask)
-
-        out = self.unet(masked)
-        return {
-            "out": ("image", out.detach().to("cpu")),
-            "masked": ("image", masked.detach().to("cpu")),
-            "batch": ("image", image.detach().to("cpu")),
+            "out": (("image", "summary"), self._summary_output(out).detach().cpu()),
+            "unmasked": ("image", self._summary_unmasked(target, mask, out).detach().cpu()),
+            "batch": ("image", image.detach().cpu()),
+            "target": (("image", "summary"), self._summary_target(target, out).detach().cpu())
         }

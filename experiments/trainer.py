@@ -155,7 +155,7 @@ class Experiment(ArgumentAdaptor):
         parser.add_argument("save_path", type=resolved_path)
         parser.add_argument("-d", "--devices", type=int, default=[0], nargs="+")
         parser.add_argument("-c", "--ckpt", default=None, type=resolved_path)
-        parser.add_argument("-e", "--epochs", default=None, type=int)
+        parser.add_argument("-e", "--epochs", default=-1, type=int)
         return parser
 
     def parse_args(self, args):
