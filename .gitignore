@@ -7,7 +7,8 @@ __pycache__/
 env/
 venv/
 ENV/
-venv/
+.venv/
+.venv/**
 .env
 
 # パッケージング関連

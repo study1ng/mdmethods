@@ -95,7 +95,7 @@ class SegmentationModule(UNetTrainingModule):
         pred = out.argmax(1, keepdim=True)
         self.metric(pred, label)
         return {
-            "image": (("image"), image.detach().cpu()),
+            "image": ("image", image.detach().cpu()),
             "gt": ("image", label.detach().cpu()),
             "out": ("image", pred.detach().cpu()),
         }
