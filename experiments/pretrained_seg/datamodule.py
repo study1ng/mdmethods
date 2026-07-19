@@ -14,7 +14,6 @@ from monai.transforms import (
     RandScaleIntensityd,
     RandAdjustContrastd,
     MaskIntensityd,
-    RandSpatialCropd,
 )
 from experiments.config import filekey, image_key, label_key
 from experiments.preprocess import (
@@ -26,7 +25,7 @@ from experiments.plan import Plan
 from experiments.assertions import AssertEq
 
 
-def augmentation_transforms(plan: Plan, image_key, label_key: list | None):
+def fit_transforms(plan: Plan, image_key, label_key: list | None):
     all_key = image_key + label_key if label_key is not None else image_key
     need_label = label_key is not None
     patch_size = plan.patch_size
@@ -93,7 +92,7 @@ def augmentation_transforms(plan: Plan, image_key, label_key: list | None):
             zoom_range=(0.5, 1.0),
         ),
     ]
-    need_label and composelist.append(MaskIntensityd(image_key, mask_key=label_key[0]))
+    # need_label and composelist.append(MaskIntensityd(image_key, mask_key=label_key[0])) # train時だけ背景をマスクしてるのはおかしい
     composelist += [
         RandFlipd(all_key, prob=0.5, spatial_axis=0),
         RandFlipd(all_key, prob=0.5, spatial_axis=1),
@@ -105,11 +104,9 @@ def augmentation_transforms(plan: Plan, image_key, label_key: list | None):
 
 def val_transforms(plan: Plan, image_key, label_key: list | None):
     all_key = image_key + label_key if label_key is not None else image_key
-    patch_size = plan.patch_size
     composelist = [
         load_transformd(all_key),
         planned_transformd(plan, image_key, label_key),
-        RandSpatialCropd(keys=all_key, roi_size=patch_size),
     ]
     return Compose(composelist)
 
@@ -173,7 +170,7 @@ class CropSegDataModule(L.LightningDataModule):
         if stage == "fit":
             pimgs = self.preprocessed_dir / "train" / image_key
             plabels = self.preprocessed_dir / "train" / label_key
-            transforms = augmentation_transforms(
+            transforms = fit_transforms(
                 self.plan, self.img_key, self.label_key
             )
             self.train_dataset = _get_dataset(pimgs, plabels, transforms=transforms)

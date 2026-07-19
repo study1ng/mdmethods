@@ -184,7 +184,7 @@ class LogCallback(Callback):
                 item[bk].meta["filename_or_obj"] = f"{epoch}_{origstem}_{k}.nii.gz"
                 if item[bk].dtype == torch.bfloat16:
                     item[bk] = item[bk].to(torch.float32)
-            SaveImage(output_dir=self.save_path, output_postfix="", separate_folder=False)(item[bk])
+                SaveImage(output_dir=self.save_path, output_postfix="", separate_folder=False)(item[bk])
         
         _process(action)
 
@@ -205,7 +205,10 @@ class LogCallback(Callback):
     def on_validation_batch_end(self, trainer, pl_module, outputs, batch, batch_idx, dataloader_idx = 0):
         if not self.on_val_end:
             return
-        if batch_idx + 1 != trainer.num_val_batches:
+        num_batches = trainer.num_val_batches
+        if isinstance(num_batches, list):
+            num_batches = num_batches[dataloader_idx]
+        if batch_idx + 1 != num_batches:
             return
         self.process_action(trainer, batch, outputs)
 

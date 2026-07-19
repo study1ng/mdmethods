@@ -2,119 +2,21 @@ import torch.utils
 import torch.utils.checkpoint
 
 from experiments.nets.builder import Builder
-from experiments.nets.ubimamba import BiMambaBlock
 from experiments.plan import Plan
 from experiments.trainer import UNetTrainingModule
-from torch import nn
-from einops import rearrange, pack
 from monai.data.utils import iter_patch_position
 import torch
-import numpy as np
 from monai.losses import DiceCELoss
 from typing import Generator
 from experiments.config import image_key, label_key
-
-
-def get_emb(sin_inp):
-    """
-    Gets a base embedding for one dimension with sin and cos intertwined
-    """
-    emb = torch.stack((sin_inp.sin(), sin_inp.cos()), dim=-1)
-    return torch.flatten(emb, -2, -1)
-
-class PointPositionalEncoding3D(nn.Module):
-    def __init__(self, channels):
-        """
-        :param channels: The last dimension of the tensor you want to apply pos emb to.
-        """
-        super().__init__()
-        self.org_channels = channels
-        channels = int(np.ceil(channels / 6) * 2)
-        if channels % 2:
-            channels += 1
-        self.channels = channels
-        div_term = np.exp(
-            np.arange(0, self.channels, 2) * -(np.log(10000.0) / self.channels)
-        )
-        div_term = torch.tensor(div_term)
-        self.register_buffer("div_term", div_term)
-
-    def forward(self, pos: tuple[int, int, int]) -> torch.Tensor:
-        device = self.div_term.device
-        dtype = self.div_term.dtype
-        pe = torch.zeros(self.channels * 3, device=device, dtype=dtype)
-        h, w, d = pos
-        pe[0 : self.channels : 2] = torch.sin(h * self.div_term)
-        pe[1 : self.channels : 2] = torch.cos(h * self.div_term)
-        pe[self.channels : 2 * self.channels : 2] = torch.sin(w * self.div_term)
-        pe[self.channels + 1 : 2 * self.channels : 2] = torch.cos(w * self.div_term)
-        pe[2 * self.channels : 3 * self.channels : 2] = torch.sin(d * self.div_term)
-        pe[2 * self.channels + 1 : 3 * self.channels : 2] = torch.cos(d * self.div_term)
-        return pe[: self.org_channels]
-
-
-class PositionalEncoding3D(nn.Module):
-    def __init__(self, channels):
-        """
-        :param channels: The last dimension of the tensor you want to apply pos emb to.
-        """
-        super().__init__()
-        self.org_channels = channels
-        channels = int(np.ceil(channels / 6) * 2)
-        if channels % 2:
-            channels += 1
-        self.channels = channels
-        inv_freq = 1.0 / (10000 ** (torch.arange(0, channels, 2).float() / channels))
-        self.cached_penc = None
-        self.register_buffer("inv_freq", inv_freq)
-
-    def forward(self, shape: tuple[int, int, int, int, int]) -> torch.Tensor:
-        """
-        :param shape: A 5d shape tuple (b, c, h, w, d)
-        :return: Positional Encoding Matrix of size (b, h, w, d, ch)
-        """
-        device = self.inv_freq.device
-        dtype = self.inv_freq.dtype
-
-        if (
-            self.cached_penc is not None
-            and self.cached_penc.shape == shape
-            and self.cached_penc.device == device
-        ):
-            return self.cached_penc
-
-        self.cached_penc = None
-        batch_size, _, h, w, d = shape
-        pos_x = torch.arange(h, device=device, dtype=dtype)
-        pos_y = torch.arange(w, device=device, dtype=dtype)
-        pos_z = torch.arange(d, device=device, dtype=dtype)
-        sin_inp_x = torch.einsum("i,j->ij", pos_x, self.inv_freq)
-        sin_inp_y = torch.einsum("i,j->ij", pos_y, self.inv_freq)
-        sin_inp_z = torch.einsum("i,j->ij", pos_z, self.inv_freq)
-        emb_x = get_emb(sin_inp_x).unsqueeze(1).unsqueeze(1)
-        emb_y = get_emb(sin_inp_y).unsqueeze(1)
-        emb_z = get_emb(sin_inp_z)
-        emb = torch.zeros(
-            (h, w, d, self.channels * 3),
-            device=device,
-            dtype=dtype,
-        )
-        emb[:, :, :, : self.channels] = emb_x
-        emb[:, :, :, self.channels : 2 * self.channels] = emb_y
-        emb[:, :, :, 2 * self.channels :] = emb_z
-
-        self.cached_penc = emb[None, :, :, :, : self.org_channels].repeat(
-            batch_size, 1, 1, 1, 1
-        )
-        return self.cached_penc
-
+from experiments.munet.munet_bottleneck import MUNetBottleneck, PatchFeature, PatchPosition
 
 class MUNetTrainingModule(UNetTrainingModule):
     def __init__(
         self,
         builder: Builder,
         *,
-        weights = None,
+        weights=None,
         loss=DiceCELoss(
             include_background=False,
             to_onehot_y=True,
@@ -135,9 +37,9 @@ class MUNetTrainingModule(UNetTrainingModule):
         builder : Builder
             Builder to build
         weights : None | float | list[float]
-            the weight which would be applied if deep_supervision, 
-            default to [1/2, 1/4, 1/8, ...], 
-            whose sum would be adjusted to 1. 
+            the weight which would be applied if deep_supervision,
+            default to [1/2, 1/4, 1/8, ...],
+            whose sum would be adjusted to 1.
             first element is about head
         plan : Plan
             plan
@@ -158,18 +60,14 @@ class MUNetTrainingModule(UNetTrainingModule):
         self.global_positional_encoding_proposition = (
             global_positional_encoding_proposition
         )
-        global_pe_channel = int(
-            global_positional_encoding_proposition * self.unet.skip_channels[-1]
-        )
         super().__init__(builder, weights)
         self.save_hyperparameters()
         self.loss = loss
-        self.bottleneck = BiMambaBlock(
-            self.unet.skip_channels[-1], self.unet.skip_channels[-1]
+        self.bottleneck = MUNetBottleneck(
+            self.unet.skip_channels[-1],
+            global_positional_encoding_proposition,
+            pos_blend,
         )
-        self.ppe = PointPositionalEncoding3D(global_pe_channel)
-        self.pe = PositionalEncoding3D(self.unet.skip_channels[-1] - global_pe_channel)
-        self.pos_blend = pos_blend
 
     def split_to_patch(
         self, image: torch.Tensor, label: torch.Tensor
@@ -201,20 +99,6 @@ class MUNetTrainingModule(UNetTrainingModule):
         )
         return patches
 
-    def add_pos_enc(self, patch_shape, patch_pos) -> torch.Tensor:
-        """
-        Returns:
-            positional encoding which shape is (B, H*W*D, C)
-        """
-        ppe = self.ppe.forward(patch_pos)  # (c)
-        b, c, h, w, d = patch_shape
-        ppe_re = ppe.view(1, 1, -1).expand(b, h * w * d, -1)
-        pe = self.pe.forward(patch_shape)
-        pe_re = rearrange(pe, "b h w d c -> b (h w d) c")
-        ret, _ = pack([ppe_re, pe_re], "b l *")
-        assert ret.shape == (b, h * w * d, c)
-        return ret
-
     def training_step(self, batch, _):
         image, label = batch[image_key], batch[label_key]
         # image: the whole image
@@ -222,49 +106,27 @@ class MUNetTrainingModule(UNetTrainingModule):
         # B, C, H, W, D, P: ボトルネックにおけるバッチサイズ, チャネル数, 高さ, 幅, 深さ, パッチ数
         skips_map = {}
         lasts = []
-        blend = []
         patches = self.split_to_patch(image, label)
 
         for patch_img, _, patch_pos in patches:
             if self.checkpoint_level <= 1:
                 skips = self.unet.encoder(patch_img)
             else:
-                skips = torch.utils.checkpoint.checkpoint(self.unet.encoder, patch_img, use_reentrant=False)
+                skips = torch.utils.checkpoint.checkpoint(
+                    self.unet.encoder, patch_img, use_reentrant=False
+                )
             skips_map[patch_pos] = skips[:-1]
             last = skips[-1]
-            h, w, d = last.shape[2:]
-            flat_transpose = rearrange(last, "b c h w d -> b (h w d) c")  # (B, HWD, C)
-            pos_encode = self.add_pos_enc(last.shape, patch_pos).to(
-                dtype=self.dtype
-            )  # (B, HWD, C)
-            blended = self.pos_blend(
-                pos_encode, flat_transpose
-            )  # (B, HWD, C), (B, HWD, C) -> (B, HWD, C)
-            lasts.append(flat_transpose)
-            blend.append(blended)
-
-        lasts, _ = pack(lasts, "b * c")  # (B, HWDP, C)
-        blended, _ = pack(blend, "b * c")  # (B, HWDP, C)
-        blended_c = blended.contiguous()  # (B, HWDP, C)
-        if self.checkpoint_level <= 0:
-            bottleneck = self.bottleneck(blended_c)  # (B, HWDP, C)
-        else:
-            bottleneck = torch.utils.checkpoint.checkpoint(self.bottleneck, blended_c, use_reentrant=False)
-        bottleneck += lasts  # 残差接続: (B, HWDP, C)
-        reshaped = rearrange(
-            bottleneck,
-            "b (p h w d) c -> p b c h w d",
-            p=len(patches),
-            h=h,
-            w=w,
-            d=d,  # (P, B, C, H, W, D)
-        )
+            lasts.append(PatchFeature(last, patch_pos))
+        bottleneck_features = self.bottleneck(tuple(lasts))
         all_loss = 0
-        for skip, _, patch_label, __ in self.to_skips(skips_map, reshaped, patches):
+        for skip, _, patch_label, __ in self.to_skips(skips_map, bottleneck_features, patches):
             if self.checkpoint_level <= 1:
-                out = self.decoder(skip)
+                out = self.unet.decoder(skip)
             else:
-                out = torch.utils.checkpoint.checkpoint(self.unet.decoder, skip, use_reentrant=False)
+                out = torch.utils.checkpoint.checkpoint(
+                    self.unet.decoder, skip, use_reentrant=False
+                )
             loss = self.loss(out, patch_label)
             all_loss += loss
         all_loss /= len(patches)
@@ -272,8 +134,21 @@ class MUNetTrainingModule(UNetTrainingModule):
         self.log("step_loss", all_loss, prog_bar=True, on_step=True)
         return all_loss
 
-    def to_skips(self, skips_map, reshaped, patches) -> Generator[
-        tuple[list[torch.Tensor], torch.Tensor, torch.Tensor, tuple[int, ...]],
+    def to_skips(
+        self,
+        skips_map: dict[PatchPosition, tuple[torch.Tensor, ...]],
+        reshaped: tuple[PatchFeature, ...],
+        patches: tuple[
+            tuple[torch.Tensor, torch.Tensor, PatchPosition],
+            ...
+        ],
+    ) -> Generator[
+        tuple[
+            list[torch.Tensor],
+            torch.Tensor,
+            torch.Tensor,
+            PatchPosition,
+        ],
         None,
         None,
     ]:
@@ -287,7 +162,9 @@ class MUNetTrainingModule(UNetTrainingModule):
             patches
         ), "Lengths of inputs must match."
 
-        for i, (patch_image, patch_label, patch_position) in enumerate(patches):
-            last = reshaped[i]
+        reshaped = {r.pos: r.feature for r in reshaped}
+
+        for patch_image, patch_label, patch_position in patches:
+            last = reshaped[patch_position]
             skips = [*skips_map[patch_position], last]
             yield (skips, patch_image, patch_label, patch_position)

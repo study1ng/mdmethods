@@ -25,6 +25,7 @@ class ZeroshotFinetuning(BaseFinetuning):
 
 class Zeroshot(PlainSegmentation):
     def configure_trainer(self, config):
+        config = super().configure_trainer(config)
         config["callbacks"].append(ZeroshotFinetuning())
         return config
 

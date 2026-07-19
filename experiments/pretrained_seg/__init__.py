@@ -38,7 +38,6 @@ class PlainSegmentation(PlannedExperiment):
             )
         else:
             builder = builder.based_on_plan(
-                self.plan,
                 "nets.ubimamba.UBiMamba",
                 self.plan,
                 input_channel=1,

@@ -44,3 +44,5 @@ data/
 
 mlruns/
 lightning_logs/
+
+hidden*

@@ -13,7 +13,6 @@ from monai.transforms import (
     RandSimulateLowResolutiond,
     RandScaleIntensityd,
     RandAdjustContrastd,
-    MaskIntensityd,
     SpatialPadd,
 )
 from experiments.assertions import AssertEq
@@ -21,7 +20,7 @@ from experiments.config import filekey, image_key, label_key
 from experiments.preprocess import load_transformd, planned_transformd
 from experiments.plan import Plan
 
-def augmentation_transforms(
+def fit_transforms(
     plan: Plan, image_key, label_key: list | None
 ):
     all_key = image_key + label_key if label_key is not None else image_key
@@ -74,7 +73,6 @@ def augmentation_transforms(
             zoom_range=(0.5, 1.0),
         ),
     ]
-    need_label and composelist.append(MaskIntensityd(image_key, mask_key=label_key[0]))
     composelist += [
         RandFlipd(all_key, prob=0.5, spatial_axis=0),
         RandFlipd(all_key, prob=0.5, spatial_axis=1),
@@ -151,7 +149,7 @@ class NoCropDataModule(L.LightningDataModule):
         if stage == "fit":
             pimgs = self.preprocessed_dir / "train" / image_key
             plabels = self.preprocessed_dir / "train" / label_key
-            transforms = augmentation_transforms(
+            transforms = fit_transforms(
                 self.plan, self.img_key, self.label_key
             )
             self.train_dataset = _get_dataset(pimgs, plabels, transforms=transforms)

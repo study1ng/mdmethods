@@ -40,4 +40,4 @@ WORKDIR /homes/${USER_NAME}/working/mdmethods
 
 COPY --chown=${USER_NAME}:${GID} pyproject.toml uv.lock ./
 RUN uv sync
-RUN uv pip install "causal-conv1d==1.5.3.post1" "mamba-ssm==2.2.6.post3" --no-build-isolation --no-binary causal-conv1d,mamba-ssm --no-cache-dir --extra-index-url https://download.pytorch.org/whl/cu121 --reinstall
+RUN uv pip install "causal-conv1d==1.5.3.post1" "mamba-ssm==2.2.6.post3" --no-build-isolation --no-binary causal-conv1d,mamba-ssm --no-cache-dir --extra-index-url https://download.pytorch.org/whl/cu121 --reinstall --no-deps
