@@ -18,7 +18,7 @@ def default_loggers(save_path: Path, experiment_name: str):
 
 def default_callbacks(save_path: Path):
     from lightning.pytorch.callbacks import ModelCheckpoint
-    from experiments.callbacks import LogCallback
+    from experiments.callbacks import LogCallback, OOMExceptionCallback
 
     return [
         ModelCheckpoint(
@@ -28,7 +28,8 @@ def default_callbacks(save_path: Path):
             save_top_k=-1,
             every_n_epochs=10,
         ),
-        LogCallback(save_path)
+        LogCallback(save_path),
+        OOMExceptionCallback()
     ]
 
 

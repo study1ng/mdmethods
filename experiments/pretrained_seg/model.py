@@ -1,3 +1,4 @@
+from experiments.nets.plainunet import PlainUNet
 from experiments.plan import Plan
 from experiments.trainer import UNetTrainingModule
 import torch
@@ -11,6 +12,7 @@ from monai.metrics import DiceMetric
 
 
 class SegmentationModule(UNetTrainingModule):
+    unet: PlainUNet
     def __init__(
         self,
         builder: list[dict] = None,
@@ -29,7 +31,7 @@ class SegmentationModule(UNetTrainingModule):
         super().save_hyperparameters()
         super().__init__(builder, weights=weights)
         self.loss = loss
-        self.metric = DiceMetric(include_background=False, reduction="mean")
+        self.metric = DiceMetric(include_background=False, reduction="mean", num_classes=self.unet.output_channel)
         self.plan = plan
 
     def forward(self, x):
@@ -46,10 +48,10 @@ class SegmentationModule(UNetTrainingModule):
                 loss += self.head_weights[i] * self.loss(
                     out[i], F.interpolate(label, out[i].shape[2:], mode="nearest")
                 )
-            unsupervised_loss = self.loss(out[0], label)
+            top_loss = self.loss(out[0], label)
         else:
             loss = self.loss(out, label)
-            unsupervised_loss = loss
+            top_loss = loss
         if loss < 0.0:
             print(loss)
             print(self.head_weights)
@@ -63,8 +65,8 @@ class SegmentationModule(UNetTrainingModule):
             raise AssertionError("loss < 0")
         self.log("training loss", loss, prog_bar=True, on_step=True, on_epoch=True)
         self.log(
-            "training unsupervised loss",
-            unsupervised_loss,
+            "training top loss",
+            top_loss,
             prog_bar=True,
             on_step=False,
             on_epoch=True,
@@ -115,7 +117,7 @@ class SegmentationModule(UNetTrainingModule):
         out = sliding_window_inference(
             image,
             roi_size=self.plan.patch_size,
-            sw_batch_size=len(batch),
+            sw_batch_size=1,
             predictor=self,
             overlap=0.5,
             mode="gaussian",
@@ -125,4 +127,66 @@ class SegmentationModule(UNetTrainingModule):
         )
         return {
             "out": ("label", out.detach().cpu()),
+        }
+
+
+    def configure_optimizers(self):
+        optim = torch.optim.AdamW(
+            [
+                {
+                    "params": self.unet.decoder.head.parameters(),
+                    "lr": 4e-4,
+                    "weight_decay": 1e-1,
+                },
+                {
+                    "params": self.unet.encoder.parameters(),
+                    "lr": 4e-5,
+                    "weight_decay": 5e-2,
+                },
+                {
+                    "params": self.unet.decoder.stages.parameters(),
+                    "lr": 4e-5,
+                    "weight_decay": 5e-2,
+                }
+            ],
+            eps=1e-5,
+            betas=(0.9, 0.95),
+        )
+        total_steps = self.trainer.estimated_stepping_batches
+        endless = total_steps == float("inf")
+        warmup_steps = min(total_steps, 250 * 1000) // 100
+        scheduler = torch.optim.lr_scheduler.SequentialLR(
+            optim,
+            [
+                torch.optim.lr_scheduler.LinearLR(
+                    optim,
+                    start_factor=1e-10,
+                    end_factor=1.0,
+                    total_iters=warmup_steps,
+                ),
+                torch.optim.lr_scheduler.CosineAnnealingLR(
+                    optim, T_max=total_steps - warmup_steps, eta_min=1e-6
+                ),
+            ],
+            milestones=[warmup_steps],
+        ) if not endless else torch.optim.lr_scheduler.SequentialLR(
+            optim, [
+                torch.optim.lr_scheduler.LinearLR(
+                    optim,
+                    start_factor=1e-10,
+                    end_factor=1.0,
+                    total_iters=warmup_steps,
+                ),
+                torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
+                    optim, T_0=100000, T_mult=2, eta_min=1e-6,
+                )
+            ],
+            milestones=[warmup_steps],
+        )
+        return {
+            "optimizer": optim,
+            "lr_scheduler": {
+                "scheduler": scheduler,
+                "interval": "step",
+            },
         }

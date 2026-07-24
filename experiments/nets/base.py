@@ -152,13 +152,8 @@ class DecoderStage(Stage):
         m = (b, c + cs, *s)
         y = self.block.calculate_output_size(m)
         return y
-
-
-class UNetHead(BaseUNetModule):
-    def __init__(self, input_channel):
-        super().__init__()
-        self.input_channel = input_channel
-
+    
+class UNetReinitializer(ABC):
     @classmethod
     @abstractmethod
     def _reinitialize_unet(cls, unet: "UNet", *args, **kwargs):
@@ -171,6 +166,13 @@ class UNetHead(BaseUNetModule):
         ret.hparams._headname = f"{cls.__module__}.{cls.__name__}"
         ret.hparams._headparams = (args, kwargs)
         return ret
+
+
+
+class UNetHead(BaseUNetModule, UNetReinitializer):
+    def __init__(self, input_channel):
+        super().__init__()
+        self.input_channel = input_channel
 
     @abstractmethod
     def calculate_output_size(self, input_size): ...

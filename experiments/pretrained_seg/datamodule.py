@@ -13,7 +13,6 @@ from monai.transforms import (
     RandSimulateLowResolutiond,
     RandScaleIntensityd,
     RandAdjustContrastd,
-    MaskIntensityd,
 )
 from experiments.config import filekey, image_key, label_key
 from experiments.preprocess import (
@@ -92,12 +91,10 @@ def fit_transforms(plan: Plan, image_key, label_key: list | None):
             zoom_range=(0.5, 1.0),
         ),
     ]
-    # need_label and composelist.append(MaskIntensityd(image_key, mask_key=label_key[0])) # train時だけ背景をマスクしてるのはおかしい
     composelist += [
         RandFlipd(all_key, prob=0.5, spatial_axis=0),
         RandFlipd(all_key, prob=0.5, spatial_axis=1),
         RandFlipd(all_key, prob=0.5, spatial_axis=2),
-        # SpatialPadd(keys=all_key, spatial_size=patch_size, mode="replicate"), # UNetの入力サイズ固定されてないしパディング必要ないことに気づいた
     ]
     return Compose(composelist)
 

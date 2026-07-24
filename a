@@ -1,1 +1,0 @@
-/usr/bin/sshfs -p 5622 usropsaiI8@10.113.249.228:/home/users/Share/radiology/nifti_and_findings_daily/CT/nift /homes/dkato/working/data/nifti -o idmap=user,allow_other,follow_symlinks -o IdentityFile=~/.ssh/id_rsa4nii

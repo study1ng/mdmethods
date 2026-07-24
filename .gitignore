@@ -47,3 +47,6 @@ mlruns/
 lightning_logs/
 
 hidden*
+*.pickle
+*.db
+*.html

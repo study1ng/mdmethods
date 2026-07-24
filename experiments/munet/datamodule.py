@@ -112,7 +112,6 @@ class NoCropDataModule(L.LightningDataModule):
         self.img_key = [image_key]
         self.label_key = [label_key]
         self.keys = self.img_key + self.label_key
-        # self.batch_size = self.plan["configurations"]["3d_fullres"]["batch_size"]
         self.batch_size = 1 # Trainerで勾配を蓄積する
 
     def setup(self, stage: str | None = None):   
@@ -174,7 +173,7 @@ class NoCropDataModule(L.LightningDataModule):
     def train_dataloader(self):
         return DataLoader(
             self.train_dataset,
-            batch_size=self.batch_size,
+            batch_size=1,
             shuffle=True,
             num_workers=self.num_workers,
             pin_memory=True,

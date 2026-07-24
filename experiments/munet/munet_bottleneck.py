@@ -24,7 +24,7 @@ def get_emb(sin_inp):
     return torch.flatten(emb, -2, -1)
 
 
-class PointPositionalEncoding3D(L.Module):
+class PointPositionalEncoding3D(L.LightningModule):
     def __init__(self, channels):
         """
         :param channels: The last dimension of the tensor you want to apply pos emb to.
@@ -55,52 +55,56 @@ class PointPositionalEncoding3D(L.Module):
         return pe[: self.org_channels]
 
 
-class PositionalEncoding3D(L.Module):
+class PositionalEncoding3D(L.LightningModule):
     def __init__(self, channels):
-        """
-        :param channels: The last dimension of the tensor you want to apply pos emb to.
-        """
         super().__init__()
+
         self.org_channels = channels
         channels = int(np.ceil(channels / 6) * 2)
         if channels % 2:
             channels += 1
+
         self.channels = channels
+
         inv_freq = 1.0 / (10000 ** (torch.arange(0, channels, 2).float() / channels))
-        self.cached_penc = None
+
         self.register_buffer("inv_freq", inv_freq)
 
+        self.cached_penc = None
+        self.cached_shape = None
+
     def forward(self, shape: tuple[int, int, int, int, int]) -> torch.Tensor:
-        """
-        :param shape: A 5d shape tuple (b, c, h, w, d)
-        :return: Positional Encoding Matrix of size (b, h, w, d, ch)
-        """
         device = self.inv_freq.device
         dtype = self.inv_freq.dtype
 
         if (
             self.cached_penc is not None
-            and self.cached_penc.shape == shape
+            and self.cached_shape == shape
             and self.cached_penc.device == device
+            and self.cached_penc.dtype == dtype
         ):
             return self.cached_penc
 
-        self.cached_penc = None
         batch_size, _, h, w, d = shape
+
         pos_x = torch.arange(h, device=device, dtype=dtype)
         pos_y = torch.arange(w, device=device, dtype=dtype)
         pos_z = torch.arange(d, device=device, dtype=dtype)
+
         sin_inp_x = torch.einsum("i,j->ij", pos_x, self.inv_freq)
         sin_inp_y = torch.einsum("i,j->ij", pos_y, self.inv_freq)
         sin_inp_z = torch.einsum("i,j->ij", pos_z, self.inv_freq)
+
         emb_x = get_emb(sin_inp_x).unsqueeze(1).unsqueeze(1)
         emb_y = get_emb(sin_inp_y).unsqueeze(1)
         emb_z = get_emb(sin_inp_z)
+
         emb = torch.zeros(
             (h, w, d, self.channels * 3),
             device=device,
             dtype=dtype,
         )
+
         emb[:, :, :, : self.channels] = emb_x
         emb[:, :, :, self.channels : 2 * self.channels] = emb_y
         emb[:, :, :, 2 * self.channels :] = emb_z
@@ -108,26 +112,28 @@ class PositionalEncoding3D(L.Module):
         self.cached_penc = emb[None, :, :, :, : self.org_channels].repeat(
             batch_size, 1, 1, 1, 1
         )
+        self.cached_shape = shape
+
         return self.cached_penc
 
 
-class MUNetBottleneck(L.Module):
+class MUNetBottleneck(L.LightningModule):
     def __init__(
         self,
         channel: int,
         global_positional_encoding_proposition: float = 0.5,
         pos_blend=lambda a, b: a + b,
     ):
-        self.bottleneck = BiMambaBlock(channel, channel)
+        self.channel = channel
         self.global_positional_encoding_proposition = (
             global_positional_encoding_proposition
         )
-        global_pe_channel = int(
-            global_positional_encoding_proposition * self.unet.skip_channels[-1]
-        )
-        self.ppe = PointPositionalEncoding3D(global_pe_channel)
-        self.pe = PositionalEncoding3D(self.unet.skip_channels[-1] - global_pe_channel)
         self.pos_blend = pos_blend
+        super().__init__()
+        self.bottleneck = BiMambaBlock(channel, channel)
+        global_pe_channel = int(global_positional_encoding_proposition * channel)
+        self.ppe = PointPositionalEncoding3D(global_pe_channel)
+        self.pe = PositionalEncoding3D(channel - global_pe_channel)
 
     def add_pos_enc(self, patch_shape, patch_pos) -> torch.Tensor:
         """
@@ -191,20 +197,28 @@ class MUNetBottleneck(L.Module):
         residual, _ = pack(flats, "b * c")  # (B, HWDP, C)
         blended, _ = pack(blended_list, "b * c")  # (B, HWDP, C)
 
-        if self.checkpoint_level <= 0:
-            bottleneck = self.bottleneck(blended.contiguous())
-        else:
-            bottleneck = torch.utils.checkpoint.checkpoint(
-                self.bottleneck,
-                blended.contiguous(),
-                use_reentrant=False,
-            )
+        residual = rearrange(
+            residual,
+            "b (p h w d) c -> b c p h w d",
+            p=len(lasts),
+            h=h,
+            w=w,
+            d=d,
+        )
+        blended = rearrange(
+            blended,
+            "b (p h w d) c -> b c p h w d",
+            p=len(lasts),
+            h=h,
+            w=w,
+            d=d,
+        )
 
-        bottleneck = bottleneck + residual
+        bottleneck = self.bottleneck(blended.contiguous()) + residual
 
         reshaped = rearrange(
             bottleneck,
-            "b (p h w d) c -> p b c h w d",
+            "b c p h w d -> p b c h w d",
             p=len(lasts),
             h=h,
             w=w,

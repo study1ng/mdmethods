@@ -219,3 +219,43 @@ class LogCallback(Callback):
             return
         # これは推論/保存も兼ねているのですべてのパッチに対して行う.
         self.process_action(trainer, batch, outputs)
+
+
+class OOMExceptionCallback(Callback):
+    def __init__(self):
+        super().__init__()
+        torch.cuda.memory._record_memory_history("state", )
+    
+    def dump_cuda_tensors(self):
+        import gc
+        import torch
+
+        tensors = []
+        for obj in gc.get_objects():
+            try:
+                if torch.is_tensor(obj) and obj.is_cuda:
+                    size = obj.numel() * obj.element_size() / 1024**2
+                    if size > 100:
+                        print(
+                            f"{size:.1f}MB "
+                            f"{obj.shape} "
+                            f"ptr={obj.data_ptr()}"
+                        )
+            except:
+                pass
+
+        tensors.sort(key=lambda x: x.numel() * x.element_size(), reverse=True)
+
+        for t in tensors[:20]:
+            size_mb = t.numel() * t.element_size() / 1024**2
+            print(
+                f"{size_mb:8.1f} MB "
+                f"shape={tuple(t.shape)} "
+                f"dtype={t.dtype} "
+                f"grad={t.requires_grad}"
+            )
+    
+    def on_exception(self, trainer, pl_module, exception):
+        torch.cuda.memory._dump_snapshot("mem_snapshot.html")
+        print(torch.cuda.memory_summary())
+        self.dump_cuda_tensors()    

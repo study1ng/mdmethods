@@ -19,6 +19,7 @@ class DecoderUnfreezeFinetuning(BaseFinetuning):
 
 class DecoderUnfreeze(PlainSegmentation):
     def configure_trainer(self, config):
+        config = super().configure_trainer(config)
         config["callbacks"].append(DecoderUnfreezeFinetuning())
         return config
 

@@ -6,11 +6,11 @@ from torch import nn
 import re
 
 
-def dl_module(net: str, expr: bool = True):
-    pck, net = net.rsplit(".", 1)
+def dl_module(fullname: str, expr: bool = True):
+    pck, fullname = fullname.rsplit(".", 1)
     if expr:
         pck = f"experiments.{pck}"
-    return getattr(importlib.import_module(pck), net)
+    return getattr(importlib.import_module(pck), fullname)
 
 
 class Builder(object):
@@ -51,7 +51,7 @@ class Builder(object):
             }
         )
         return self
-
+    
     def reinitialize(self, module: str, *args, **kwargs):
         self.actions.append(
             {

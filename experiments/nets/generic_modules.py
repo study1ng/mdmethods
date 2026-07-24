@@ -1,5 +1,5 @@
 from fractions import Fraction
-from typing import Callable
+from typing import Callable, Sequence
 
 from experiments.assertions import AssertEq
 from experiments.nets.base import BaseUNetModule, Block, Pool
@@ -7,7 +7,56 @@ from torch import nn, Tensor
 
 from experiments.utils import assert_to_integer, element_wise, reciprocal, repeat
 import torch.nn.functional as F
+from monai.networks.nets.swin_unetr import (
+    SwinTransformerBlock as MSwinTransformerBlock,
+    PatchMergingV2,
+)
 
+
+class SwinTransformerBlock(Block):
+    def __init__(
+        self,
+        input_channel,
+        *,
+        num_heads: int,
+        window_size: Sequence[int],
+        shift_size: Sequence[int],
+        mlp_ratio: float = 4.0,
+        qkv_bias: bool = True,
+        drop: float = 0.0,
+        attn_drop: float = 0.0,
+        drop_path: float = 0.0,
+    ):
+        self.input_channel = input_channel
+        self.num_heads = num_heads
+        self.shift_size = shift_size
+        self.window_size = window_size
+        self.mlp_ratio = mlp_ratio
+        self.qkv_bias = qkv_bias
+        self.drop = drop
+        self.attn_drop = attn_drop
+        self.drop_path = drop_path
+        super().__init__(input_channel, input_channel)
+        self.module = MSwinTransformerBlock(input_channel, num_heads, window_size, shift_size, mlp_ratio, qkv_bias, drop, attn_drop, drop_path)
+        
+    def _forward(self, x):
+        return self.module(x)
+
+class PatchMerging(Pool):
+    def __init__(
+        self,
+        input_channel: int,
+        *,
+        dim: int
+    ):
+        assert dim in [2, 3], f"Patch Merging only accept 3d or 2d"
+        self.input_channel = input_channel
+        self.dim = dim
+        super().__init__(input_channel, input_channel * 2, Fraction(1, 2))
+        self.module = PatchMergingV2(input_channel, spatial_dims=dim)
+    
+    def _forward(self, x):
+        return self.module(x)
 
 class SequentialBlock(Block):
     """nn.Sequential for block version
@@ -36,6 +85,7 @@ class LinearBlock(Block):
 
     def _forward(self, x):
         return self.module(x)
+
 
 class InstanceNormBlock(Block):
     def __init__(self, input_channel, *, dim: int):
@@ -165,7 +215,7 @@ class StridedConv(Pool):
             self.pool_stride = assert_to_integer(reciprocal(pool_scale))
         except AssertionError:
             raise AssertionError(f"Strided Conv only accepts reciprocal of integer")
-        
+
         self.module = ConvBlock.conv(self.dim)(
             self.input_channel,
             self.output_channel,
@@ -214,7 +264,9 @@ class InterpolateUpSample(Pool):
         try:
             self.pool_stride = assert_to_integer(pool_scale)
         except AssertionError:
-            raise AssertionError("Interpolate Up Sample only accepts integer pool scale")
+            raise AssertionError(
+                "Interpolate Up Sample only accepts integer pool scale"
+            )
         self.module = self.conv(input_channel, output_channel, 1, dim=self.dim)
 
     def _forward(self, x):
@@ -262,6 +314,7 @@ class RepeatingBlock(Block):
     def _forward(self, x):
         return self.module(x)
 
+
 class GlobalAveragePool(BaseUNetModule):
     def __init__(self, output_size: int | tuple[int, ...], *, dim: int):
         super().__init__()
@@ -269,7 +322,6 @@ class GlobalAveragePool(BaseUNetModule):
         self.output_size = repeat(output_size, dim, types=int)
         AssertEq()(self.dim, len(self.output_size))
         self.module = self.gap(self.dim)(self.output_shape)
-
 
     @staticmethod
     def gap(dim: int):
@@ -279,10 +331,9 @@ class GlobalAveragePool(BaseUNetModule):
             case 2:
                 return nn.AdaptiveAvgPool2d
             case 3:
-                return nn.AdaptiveAvgPool3d            
+                return nn.AdaptiveAvgPool3d
             case _:
                 raise ValueError(f"dim {dim} should be 1~3")
-
 
     def _forward(self, x):
         return self.module(x)
