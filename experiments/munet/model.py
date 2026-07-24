@@ -17,6 +17,7 @@ from experiments.munet.munet_bottleneck import (
 )
 from monai.metrics import DiceMetric
 from experiments.munet.stitch_utils import split_to_patch, stitch_logits, BlendMode
+import torch.nn.functional as F
 
 
 class MUNetTrainingModule(UNetTrainingModule):
@@ -36,7 +37,7 @@ class MUNetTrainingModule(UNetTrainingModule):
         global_positional_encoding_proposition: float = 0.5,
         pos_blend=lambda a, b: a + b,
         plan: Plan,
-        checkpoint_level: int = 0,
+        overlap_scale: float = 0.25,
     ):
         """Training Module for MUNet
 
@@ -56,14 +57,10 @@ class MUNetTrainingModule(UNetTrainingModule):
         global_positional_encoding_proposition : float, optional
             the proposition of positional encoding which represents the position the patch in whole image, by default 0.5
         pos_blend : (Tensor, Tensor) -> Tensor, optional
-            the function to mix positional encoding and feature map, by default lambdaa
-        checkpoint_level : int, optional
-            the level of checkpointing, by default 0
-            higher then slower less memory consumption
+            the function to mix positional encoding and feature map, by default lambda
         """
-        self.checkpoint_level = checkpoint_level
         self.plan = plan
-        self.overlap_scale = 0.5  # proposion of self.plan.patch_size
+        self.overlap_scale = overlap_scale  # proposion of self.plan.patch_size
         self.overlap = tuple(int(self.overlap_scale * p) for p in self.plan.patch_size)
         self.global_positional_encoding_proposition = (
             global_positional_encoding_proposition
@@ -112,38 +109,38 @@ class MUNetTrainingModule(UNetTrainingModule):
         else:
             patches = tuple((image[0], None, image[1]) for image in image_split)
         return patches
-    
+
     def forward(
         self,
         patches: tuple[tuple[torch.Tensor, torch.Tensor | None, tuple[int, ...]], ...],
     ) -> Generator[Any, None, None]:
         lasts = []
-        
+
         for patch_img, _, patch_pos in patches:
             with torch.no_grad():
                 last = self.unet.encoder(patch_img)[-1]
             lasts.append(PatchFeature(last, patch_pos))
-            
+
         bottleneck_features = self.bottleneck(tuple(lasts))
-        
+        # ma = 0.
+        # for b, l in zip(bottleneck_features, lasts):
+        #     ma = max(ma, (b.feature - l.feature).abs().max().item())
+        # print("bottleneck change max: ", ma)
+
         for last, patch_img, patch_label, patch_pos in self.to_skips(
             bottleneck_features, patches
         ):
             with torch.no_grad():
                 skips = self.unet.encoder(patch_img)
-            skips = (*skips[:-1], last)
-        
-            with torch.no_grad():
-                skips = self.unet.encoder(patch_img)
-            skips = (*skips[:-1], last)
-            out = torch.utils.checkpoint.checkpoint(
-                self.unet.decoder,
-                skips,
-                use_reentrant=False,
-            )
+            bottleneck_skips = (*skips[:-1], last)
+
+            out = self.unet.decoder(bottleneck_skips)
+            # p_out = self.unet.decoder(skips)
+            # print("last max between two networks", last.abs().max().item())
+            # print("last mean between two networks", last.abs().mean().item())
+            # print("diff max between two networks", (out - p_out).abs().max().item())
+            # print("diff mean between two networks", (out - p_out).abs().mean().item())
             yield patch_img, patch_label, out, patch_pos
-
-
 
     def training_step(self, batch, _):
         image, label = batch[image_key], batch[label_key]
@@ -153,18 +150,43 @@ class MUNetTrainingModule(UNetTrainingModule):
         patches = self.split_to_patch(image, label)
         try:
             outs = self(patches)
-
             all_loss = 0.0
             results = []
+            opt = self.optimizers()
+            opt.zero_grad()
             for patch_img, patch_label, out, patch_pos in outs:
+                # p_out = self.unet(patch_img)
+                # if self.deep_supervision:
+                #     loss = 0
+                #     for i in range(len(p_out)):
+                #         loss += self.head_weights[i] * self.loss(
+                #             p_out[i], F.interpolate(patch_label, p_out[i].shape[2:], mode="nearest")
+                #         )
+                #     top_loss = self.loss(p_out[0], label)
+                # else:
+                #     loss = self.loss(p_out, patch_label)
+                #     top_loss = loss
                 loss = self.loss(out, patch_label) / len(patches)
+                # print(top_loss, loss * len(patches))
+                # print(self.global_step)
                 self.manual_backward(loss, retain_graph=True)
                 all_loss += loss.detach()
                 results.append((out.detach(), patch_pos))
+            scheduler = self.lr_schedulers()
+            scheduler.step()
+            opt.step()
         except Exception as e:
             print(image.shape)
             raise e
+        # all_loss /= len(patches)
 
+        self.log(
+            "gamma",
+            self.bottleneck.gamma.abs().max().item(),
+            prog_bar=True,
+            on_step=True,
+            on_epoch=True,
+        )
         self.log("training loss", all_loss, prog_bar=True, on_step=True, on_epoch=True)
         self.log("lr", self.optimizers().param_groups[0]["lr"], prog_bar=True)
         with torch.no_grad():
@@ -201,9 +223,7 @@ class MUNetTrainingModule(UNetTrainingModule):
         Returns:
             Generator[(skip feature maps, patch image, patch label, patch position)]
         """
-        assert len(reshaped) == len(
-            patches
-        ), "Lengths of inputs must match."
+        assert len(reshaped) == len(patches), "Lengths of inputs must match."
 
         reshaped = {r.pos: r.feature for r in reshaped}
 

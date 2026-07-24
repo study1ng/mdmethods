@@ -30,17 +30,11 @@ class BottleneckSeg(PlainSegmentation):
     def _build_module(self):
         builder = Builder()
         if self.args.pretrained_path is not None:
-            builder = (
-                builder.based_on_ckpt(self.args.pretrained_path)
-                .reinitialize(
-                    "nets.plainunet.PlainHead",
-                    output_channel=118,
-                )
-            )
+            builder = builder.based_on_ckpt(self.args.pretrained_path)
         else:
             raise Exception("Munet needs pretrained model")
         builder = builder.to_params()
-        lm = Model(builder=builder, plan=self.plan, checkpoint_level=2)
+        lm = Model(builder=builder, plan=self.plan, overlap_scale=0.25)
         return lm
 
 

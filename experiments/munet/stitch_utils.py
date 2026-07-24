@@ -45,14 +45,24 @@ def stitch_logits(
 ):
     try:
         first_patch, _ = patches[0]
-        patch_shape = np.array(first_patch.shape[2:])
+
+        # 元のデバイスを保持
+        original_device = first_patch.device
+
+        # CPUへ移動
+        first_patch_cpu = first_patch.cpu()
+
+        patch_shape = np.array(first_patch_cpu.shape[2:])
 
         importance_map = (
-            torch.ones_like(first_patch, device=first_patch.device)
+            torch.ones_like(first_patch_cpu)
             if mode == BlendMode.CONSTANT
-            else get_gaussian_kernel(tuple(patch_shape), sigma_scale).to(first_patch.device)
+            else get_gaussian_kernel(
+                tuple(patch_shape), sigma_scale
+            ).to("cpu")
         )
-        if output_size == None:
+
+        if output_size is None:
             output_size = np.zeros(len(patch_shape), dtype=int)
 
             for patch, patch_pos in patches:
@@ -61,31 +71,35 @@ def stitch_logits(
                 output_size = np.maximum(output_size, patch_end)
 
         canvas = torch.zeros(
-            (*first_patch.shape[:2], *output_size),
-            dtype=first_patch.dtype,
-            device=first_patch.device,
+            (*first_patch_cpu.shape[:2], *output_size),
+            dtype=first_patch_cpu.dtype,
+            device="cpu",
         )
 
         weight_map = torch.zeros_like(canvas)
 
         for patch, patch_pos in patches:
+            patch_cpu = patch.cpu()
+
             patch_pos = np.array(patch_pos)
-            patch_end = patch_pos + np.array(patch.shape[2:])
+            patch_end = patch_pos + np.array(patch_cpu.shape[2:])
 
             slc = (
                 slice(None),
                 slice(None),
                 *[slice(s, e) for s, e in zip(patch_pos, patch_end)],
             )
-            
-            canvas[slc].addcmul_(patch, importance_map)
+
+            canvas[slc].addcmul_(patch_cpu, importance_map)
             weight_map[slc] += importance_map
 
         if mode != BlendMode.CONSTANT:
-            weight_map.clamp_(min=1e-8) 
+            weight_map.clamp_(min=1e-8)
             canvas.div_(weight_map)
 
-        return canvas
+        # 元のデバイスへ戻す
+        return canvas.to(original_device)
+
     except torch.OutOfMemoryError as e:
         print(patches[0][0].shape, len(patches))
         raise e

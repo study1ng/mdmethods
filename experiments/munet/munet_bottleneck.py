@@ -15,7 +15,6 @@ class PatchFeature:
     feature: torch.Tensor
     pos: PatchPosition
 
-
 def get_emb(sin_inp):
     """
     Gets a base embedding for one dimension with sin and cos intertwined
@@ -134,6 +133,7 @@ class MUNetBottleneck(L.LightningModule):
         global_pe_channel = int(global_positional_encoding_proposition * channel)
         self.ppe = PointPositionalEncoding3D(global_pe_channel)
         self.pe = PositionalEncoding3D(channel - global_pe_channel)
+        self.gamma = torch.nn.Parameter(torch.full((1,), 1e-5))
 
     def add_pos_enc(self, patch_shape, patch_pos) -> torch.Tensor:
         """
@@ -214,7 +214,10 @@ class MUNetBottleneck(L.LightningModule):
             d=d,
         )
 
-        bottleneck = self.bottleneck(blended.contiguous()) + residual
+        bottleneck: torch.Tensor = self.bottleneck(blended.contiguous())
+        # print("bottleneck max: ", bottleneck.abs().max())
+        bottleneck *= self.gamma
+        bottleneck += residual
 
         reshaped = rearrange(
             bottleneck,
