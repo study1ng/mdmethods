@@ -91,11 +91,11 @@ def fit_transforms(plan: Plan, image_key, label_key: list | None):
             zoom_range=(0.5, 1.0),
         ),
     ]
-    composelist += [
-        RandFlipd(all_key, prob=0.5, spatial_axis=0),
-        RandFlipd(all_key, prob=0.5, spatial_axis=1),
-        RandFlipd(all_key, prob=0.5, spatial_axis=2),
-    ]
+    # composelist += [
+    #     RandFlipd(all_key, prob=0.5, spatial_axis=0),
+    #     RandFlipd(all_key, prob=0.5, spatial_axis=1),
+    #     RandFlipd(all_key, prob=0.5, spatial_axis=2),
+    # ]
     return Compose(composelist)
 
 

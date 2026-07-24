@@ -1,12 +1,9 @@
-import torch.utils
-import torch.utils.checkpoint
-
 from experiments.nets.builder import Builder
 from experiments.plan import Plan
-from experiments.pretrained_seg.model import SegmentationModule
 from experiments.trainer import UNetTrainingModule
 from monai.data.utils import iter_patch_position
 import torch
+import torch.nn.functional as F
 from monai.losses import DiceCELoss
 from typing import Any, Generator
 from experiments.config import image_key, label_key
@@ -17,7 +14,6 @@ from experiments.munet.munet_bottleneck import (
 )
 from monai.metrics import DiceMetric
 from experiments.munet.stitch_utils import split_to_patch, stitch_logits, BlendMode
-import torch.nn.functional as F
 
 
 class MUNetTrainingModule(UNetTrainingModule):
@@ -82,6 +78,7 @@ class MUNetTrainingModule(UNetTrainingModule):
             pos_blend,
         )
         self.automatic_optimization = False
+        self.cache_skip_level = 1
 
     def split_to_patch(
         self, image: torch.Tensor, label: torch.Tensor | None = None
@@ -110,16 +107,30 @@ class MUNetTrainingModule(UNetTrainingModule):
             patches = tuple((image[0], None, image[1]) for image in image_split)
         return patches
 
+    def _slice_encoder(self, x: torch.Tensor, end: int) -> tuple[torch.Tensor, ...]:
+        if end == 0:
+            return ()
+        hi = self.unet.encoder.stem(x)  # (B, C, H, W, D)
+        ret = [hi]
+        for stage in self.unet.encoder.stages:
+            if len(ret) >= end:
+                return tuple(ret)
+            hi = stage(hi)
+            ret.append(hi)
+        return tuple(ret)
+
+
     def forward(
         self,
         patches: tuple[tuple[torch.Tensor, torch.Tensor | None, tuple[int, ...]], ...],
     ) -> Generator[Any, None, None]:
+        skips_map = {}
         lasts = []
 
         for patch_img, _, patch_pos in patches:
-            with torch.no_grad():
-                last = self.unet.encoder(patch_img)[-1]
-            lasts.append(PatchFeature(last, patch_pos))
+            skips = self.unet.encoder(patch_img)
+            skips_map[patch_pos] = skips[self.cache_skip_level:-1]
+            lasts.append(PatchFeature(skips[-1], patch_pos))
 
         bottleneck_features = self.bottleneck(tuple(lasts))
         # ma = 0.
@@ -127,12 +138,11 @@ class MUNetTrainingModule(UNetTrainingModule):
         #     ma = max(ma, (b.feature - l.feature).abs().max().item())
         # print("bottleneck change max: ", ma)
 
-        for last, patch_img, patch_label, patch_pos in self.to_skips(
-            bottleneck_features, patches
+        for skip, patch_img, patch_label, patch_pos in self.to_skips(
+            skips_map, bottleneck_features, patches
         ):
-            with torch.no_grad():
-                skips = self.unet.encoder(patch_img)
-            bottleneck_skips = (*skips[:-1], last)
+            skips = self._slice_encoder(patch_img, self.cache_skip_level)
+            bottleneck_skips = (*skips, *skip)
 
             out = self.unet.decoder(bottleneck_skips)
             # p_out = self.unet.decoder(skips)
@@ -173,8 +183,8 @@ class MUNetTrainingModule(UNetTrainingModule):
                 all_loss += loss.detach()
                 results.append((out.detach(), patch_pos))
             scheduler = self.lr_schedulers()
-            scheduler.step()
             opt.step()
+            scheduler.step()
         except Exception as e:
             print(image.shape)
             raise e
@@ -205,11 +215,12 @@ class MUNetTrainingModule(UNetTrainingModule):
 
     def to_skips(
         self,
+        skips_map: dict[PatchPosition, tuple[torch.Tensor, ...]],
         reshaped: tuple[PatchFeature, ...],
         patches: tuple[tuple[torch.Tensor, torch.Tensor | None, PatchPosition], ...],
     ) -> Generator[
         tuple[
-            torch.Tensor,
+            tuple[torch.Tensor, ...],
             torch.Tensor,
             torch.Tensor | None,
             PatchPosition,
@@ -228,8 +239,9 @@ class MUNetTrainingModule(UNetTrainingModule):
         reshaped = {r.pos: r.feature for r in reshaped}
 
         for patch_image, patch_label, patch_position in patches:
-            last = reshaped[patch_position]
-            yield (last, patch_image, patch_label, patch_position)
+            last = reshaped[patch_position]            
+            skips = (*skips_map[patch_position], last)
+            yield (skips, patch_image, patch_label, patch_position)
 
     def validation_step(self, batch, _):
         image = batch[image_key]  # (B,C,H,W,D)

@@ -6,7 +6,7 @@ from experiments.munet.datamodule import NoCropDataModule as DataModule
 from experiments.munet.model import MUNetTrainingModule as Model
 
 
-class Overlap010(BottleneckSeg):
+class Overlap0(BottleneckSeg):
     def _build_module(self):
         builder = Builder()
         if self.args.pretrained_path is not None:
@@ -14,9 +14,9 @@ class Overlap010(BottleneckSeg):
         else:
             raise Exception("Munet needs pretrained model")
         builder = builder.to_params()
-        lm = Model(builder=builder, plan=self.plan, overlap_scale=0.1)
+        lm = Model(builder=builder, plan=self.plan, overlap_scale=0.)
         return lm
 
 
 def train(args, parsed):
-    Overlap010(args, parsed)()
+    Overlap0(args, parsed)()

@@ -74,9 +74,9 @@ def fit_transforms(
         ),
     ]
     composelist += [
-        RandFlipd(all_key, prob=0.5, spatial_axis=0),
-        RandFlipd(all_key, prob=0.5, spatial_axis=1),
-        RandFlipd(all_key, prob=0.5, spatial_axis=2),
+        # RandFlipd(all_key, prob=0.5, spatial_axis=0),
+        # RandFlipd(all_key, prob=0.5, spatial_axis=1),
+        # RandFlipd(all_key, prob=0.5, spatial_axis=2),
         SpatialPadd(keys=all_key, spatial_size=patch_size)
     ]
     return Compose(composelist)
