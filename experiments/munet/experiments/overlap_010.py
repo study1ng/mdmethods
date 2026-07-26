@@ -14,7 +14,7 @@ class Overlap010(BottleneckSeg):
         else:
             raise Exception("Munet needs pretrained model")
         builder = builder.to_params()
-        lm = Model(builder=builder, plan=self.plan, overlap_scale=0.1)
+        lm = Model(builder=builder, plan=self.plan, overlap_scale=0.1, gamma=1e-5)
         return lm
 
 

@@ -120,8 +120,10 @@ class MUNetBottleneck(L.LightningModule):
     def __init__(
         self,
         channel: int,
+        *,
         global_positional_encoding_proposition: float = 0.5,
         pos_blend=lambda a, b: a + b,
+        gamma: float = 1e-5,
     ):
         self.channel = channel
         self.global_positional_encoding_proposition = (
@@ -133,7 +135,7 @@ class MUNetBottleneck(L.LightningModule):
         global_pe_channel = int(global_positional_encoding_proposition * channel)
         self.ppe = PointPositionalEncoding3D(global_pe_channel)
         self.pe = PositionalEncoding3D(channel - global_pe_channel)
-        self.gamma = torch.nn.Parameter(torch.full((1,), 1e-5))
+        self.gamma = torch.nn.Parameter(torch.full((1,), gamma))
 
     def add_pos_enc(self, patch_shape, patch_pos) -> torch.Tensor:
         """

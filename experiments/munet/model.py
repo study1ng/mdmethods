@@ -34,6 +34,7 @@ class MUNetTrainingModule(UNetTrainingModule):
         pos_blend=lambda a, b: a + b,
         plan: Plan,
         overlap_scale: float = 0.25,
+        gamma: float = 1e-5,
     ):
         """Training Module for MUNet
 
@@ -61,6 +62,7 @@ class MUNetTrainingModule(UNetTrainingModule):
         self.global_positional_encoding_proposition = (
             global_positional_encoding_proposition
         )
+        self.gamma = gamma
         super().__init__(builder, weights)
         self.unet.deep_supervision = False
         self.unet.decoder.deep_supervision = False
@@ -74,8 +76,9 @@ class MUNetTrainingModule(UNetTrainingModule):
         )
         self.bottleneck = MUNetBottleneck(
             self.unet.skip_channels[-1],
-            global_positional_encoding_proposition,
-            pos_blend,
+            global_positional_encoding_proposition=self.global_positional_encoding_proposition,
+            pos_blend=pos_blend,
+            gamma=self.gamma,
         )
         self.automatic_optimization = False
         self.cache_skip_level = 1

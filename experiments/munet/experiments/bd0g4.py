@@ -5,13 +5,13 @@ from lightning.pytorch.callbacks import BaseFinetuning
 from experiments.munet.datamodule import NoCropDataModule as DataModule
 from experiments.munet.model import MUNetTrainingModule as Model
 
-class BottleneckFinetuning(BaseFinetuning):
+class DecoderFinetuning(BaseFinetuning):
     def __init__(self):
         super().__init__()
 
     def freeze_before_training(self, pl_module: Model):
-        self.freeze(pl_module.unet)
-        for p in pl_module.unet.parameters():
+        self.freeze(pl_module.unet.encoder)
+        for p in pl_module.unet.encoder.parameters():
             p.requires_grad_(False)
 
     def finetune_function(self, pl_module, epoch, optimizer):
@@ -21,7 +21,7 @@ class BottleneckFinetuning(BaseFinetuning):
 class BottleneckSeg(PlainSegmentation):
     def configure_trainer(self, config):
         config = super().configure_trainer(config)
-        config["callbacks"].append(BottleneckFinetuning())
+        config["callbacks"].append(DecoderFinetuning())
         return config
     
     def _build_data_module(self):
@@ -34,7 +34,7 @@ class BottleneckSeg(PlainSegmentation):
         else:
             raise Exception("Munet needs pretrained model")
         builder = builder.to_params()
-        lm = Model(builder=builder, plan=self.plan, overlap_scale=0.25, gamma=1e-5)
+        lm = Model(builder=builder, plan=self.plan, overlap_scale=0., gamma=1e-4)
         return lm
 
 

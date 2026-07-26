@@ -1,3 +1,5 @@
+from typing import Any, Callable
+
 from experiments.nets.plainunet import PlainUNet
 from experiments.plan import Plan
 from experiments.trainer import UNetTrainingModule
@@ -11,8 +13,53 @@ from monai.losses import DiceCELoss
 from monai.metrics import DiceMetric
 
 
+class DeepDiceCELoss(nn.Module):
+    def __init__(
+        self,
+        weights,
+        include_background: bool = True,
+        to_onehot_y: bool = False,
+        sigmoid: bool = False,
+        softmax: bool = False,
+        other_act: Callable[..., Any] | None = None,
+        squared_pred: bool = False,
+        jaccard: bool = False,
+        reduction: str = "mean",
+        smooth_nr: float = 0.00001,
+        smooth_dr: float = 0.00001,
+        batch: bool = False,
+        weight: Tensor | None = None,
+        lambda_dice: float = 1,
+        lambda_ce: float = 1,
+        label_smoothing: float = 0,
+    ):
+        super().__init__()
+        self.weights = weights
+        self.loss = DiceCELoss(
+            include_background=include_background,
+            to_onehot_y=to_onehot_y,
+            sigmoid=sigmoid,
+            softmax=softmax,
+            other_act=other_act,
+            squared_pred=squared_pred,
+            jaccard=jaccard,
+            reduction=reduction,
+            smooth_nr=smooth_nr,
+            smooth_dr=smooth_dr,
+            batch=batch,
+            weight=weight,
+            lambda_dice=lambda_dice,
+            lambda_ce=lambda_ce,
+            label_smoothing=label_smoothing,
+        )
+
+    def forward(self, out, label):
+        ...
+
+
 class SegmentationModule(UNetTrainingModule):
     unet: PlainUNet
+
     def __init__(
         self,
         builder: list[dict] = None,
@@ -31,7 +78,11 @@ class SegmentationModule(UNetTrainingModule):
         super().save_hyperparameters()
         super().__init__(builder, weights=weights)
         self.loss = loss
-        self.metric = DiceMetric(include_background=False, reduction="mean", num_classes=self.unet.output_channel)
+        self.metric = DiceMetric(
+            include_background=False,
+            reduction="mean",
+            num_classes=self.unet.output_channel,
+        )
         self.plan = plan
 
     def forward(self, x):
@@ -129,7 +180,6 @@ class SegmentationModule(UNetTrainingModule):
             "out": ("label", out.detach().cpu()),
         }
 
-
     def configure_optimizers(self):
         optim = torch.optim.AdamW(
             [
@@ -147,7 +197,7 @@ class SegmentationModule(UNetTrainingModule):
                     "params": self.unet.decoder.stages.parameters(),
                     "lr": 4e-5,
                     "weight_decay": 5e-2,
-                }
+                },
             ],
             eps=1e-5,
             betas=(0.9, 0.95),
@@ -155,33 +205,41 @@ class SegmentationModule(UNetTrainingModule):
         total_steps = self.trainer.estimated_stepping_batches
         endless = total_steps == float("inf")
         warmup_steps = min(total_steps, 250 * 1000) // 100
-        scheduler = torch.optim.lr_scheduler.SequentialLR(
-            optim,
-            [
-                torch.optim.lr_scheduler.LinearLR(
-                    optim,
-                    start_factor=1e-10,
-                    end_factor=1.0,
-                    total_iters=warmup_steps,
-                ),
-                torch.optim.lr_scheduler.CosineAnnealingLR(
-                    optim, T_max=total_steps - warmup_steps, eta_min=1e-6
-                ),
-            ],
-            milestones=[warmup_steps],
-        ) if not endless else torch.optim.lr_scheduler.SequentialLR(
-            optim, [
-                torch.optim.lr_scheduler.LinearLR(
-                    optim,
-                    start_factor=1e-10,
-                    end_factor=1.0,
-                    total_iters=warmup_steps,
-                ),
-                torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
-                    optim, T_0=100000, T_mult=2, eta_min=1e-6,
-                )
-            ],
-            milestones=[warmup_steps],
+        scheduler = (
+            torch.optim.lr_scheduler.SequentialLR(
+                optim,
+                [
+                    torch.optim.lr_scheduler.LinearLR(
+                        optim,
+                        start_factor=1e-10,
+                        end_factor=1.0,
+                        total_iters=warmup_steps,
+                    ),
+                    torch.optim.lr_scheduler.CosineAnnealingLR(
+                        optim, T_max=total_steps - warmup_steps, eta_min=1e-6
+                    ),
+                ],
+                milestones=[warmup_steps],
+            )
+            if not endless
+            else torch.optim.lr_scheduler.SequentialLR(
+                optim,
+                [
+                    torch.optim.lr_scheduler.LinearLR(
+                        optim,
+                        start_factor=1e-10,
+                        end_factor=1.0,
+                        total_iters=warmup_steps,
+                    ),
+                    torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
+                        optim,
+                        T_0=100000,
+                        T_mult=2,
+                        eta_min=1e-6,
+                    ),
+                ],
+                milestones=[warmup_steps],
+            )
         )
         return {
             "optimizer": optim,
