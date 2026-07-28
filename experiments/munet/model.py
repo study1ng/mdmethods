@@ -122,7 +122,6 @@ class MUNetTrainingModule(UNetTrainingModule):
             ret.append(hi)
         return tuple(ret)
 
-
     def forward(
         self,
         patches: tuple[tuple[torch.Tensor, torch.Tensor | None, tuple[int, ...]], ...],
@@ -132,7 +131,7 @@ class MUNetTrainingModule(UNetTrainingModule):
 
         for patch_img, _, patch_pos in patches:
             skips = self.unet.encoder(patch_img)
-            skips_map[patch_pos] = skips[self.cache_skip_level:-1]
+            skips_map[patch_pos] = skips[self.cache_skip_level : -1]
             lasts.append(PatchFeature(skips[-1], patch_pos))
 
         bottleneck_features = self.bottleneck(tuple(lasts))
@@ -205,7 +204,7 @@ class MUNetTrainingModule(UNetTrainingModule):
         with torch.no_grad():
             out = stitch_logits(
                 tuple(results),
-                BlendMode,
+                BlendMode.GAUSSIAN,
                 output_size=image.shape[2:],
             )
         pred = out.argmax(1, keepdim=True)
@@ -242,7 +241,7 @@ class MUNetTrainingModule(UNetTrainingModule):
         reshaped = {r.pos: r.feature for r in reshaped}
 
         for patch_image, patch_label, patch_position in patches:
-            last = reshaped[patch_position]            
+            last = reshaped[patch_position]
             skips = (*skips_map[patch_position], last)
             yield (skips, patch_image, patch_label, patch_position)
 
@@ -253,7 +252,7 @@ class MUNetTrainingModule(UNetTrainingModule):
         outs = self(patches)
         out = stitch_logits(
             tuple((out, patch_pos) for _, __, out, patch_pos in outs),
-            BlendMode,
+            BlendMode.GAUSSIAN,
             output_size=image.shape[2:],
         )
         pred = out.argmax(1, keepdim=True)
@@ -280,7 +279,7 @@ class MUNetTrainingModule(UNetTrainingModule):
         outs = self(patches)
         out = stitch_logits(
             tuple((out, patch_pos) for _, __, out, patch_pos in outs),
-            BlendMode,
+            BlendMode.GAUSSIAN,
             output_size=image.shape[2:],
         )
         pred = out.argmax(1, keepdim=True)

@@ -10,6 +10,7 @@ from monai import transforms
 from pprint import pprint
 from experiments.config import label_key, image_key
 from experiments.utils.wraputils import element_wise
+from lightning.pytorch.trainer.states import RunningStage
 
 def _invert(item: MetaTensor | Tensor, transform_info):
     cls = transform_info["class"]
@@ -157,7 +158,7 @@ class LogCallback(Callback):
         print(f"25th %ile: {q25:.4f} | 75th %ile: {q75:.4f} | Zeros: {sparsity:.2%}")
         print("-" * 25 + "\n")
 
-    def _process_action(self, k, batch, epoch, action: tuple[str | tuple[str, ...], MetaTensor], test: bool):
+    def _process_action(self, stage, k, batch, epoch, action: tuple[str | tuple[str, ...], MetaTensor], test: bool):
         action, v = action
 
         @element_wise(types=str)
@@ -181,7 +182,7 @@ class LogCallback(Callback):
                     origstem = orig.split("/")[-1].split(".")[0]
                 else:
                     origstem = "unknown"
-                item[bk].meta["filename_or_obj"] = f"{epoch}_{origstem}_{k}.nii.gz"
+                item[bk].meta["filename_or_obj"] = f"{stage}_{epoch}_{origstem}_{k}.nii.gz"
                 if item[bk].dtype == torch.bfloat16:
                     item[bk] = item[bk].to(torch.float32)
                 SaveImage(output_dir=self.save_path, output_postfix="", separate_folder=False)(item[bk])
@@ -189,10 +190,20 @@ class LogCallback(Callback):
         _process(action)
 
     def process_action(self, trainer: L.Trainer, batch, outputs):
+        if trainer.state.stage == RunningStage.TRAINING:
+            stage = "fit"
+        elif trainer.state.stage == RunningStage.VALIDATING:
+            stage = "val"
+        elif trainer.state.stage == RunningStage.TESTING:
+            stage = "test"
+        elif trainer.state.stage == RunningStage.PREDICTING:
+            stage = "predict"
+        else:
+            stage = "unknown"
         for k, action in outputs.items():
             if not isinstance(action, tuple):
                 continue
-            self._process_action(k, batch, trainer.current_epoch, action, trainer.testing)
+            self._process_action(stage, k, batch, trainer.current_epoch, action, trainer.testing)
 
 
     def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
