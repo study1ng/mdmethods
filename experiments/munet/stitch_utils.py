@@ -1,4 +1,5 @@
 from __future__ import annotations
+from itertools import product
 import torch
 from monai.utils import (
     BlendMode,
@@ -17,9 +18,19 @@ def split_to_patch(
     """
     # -> [(patch_image, patch_label, patch_position)*]
     # patch_positionはパッチの開始位置(バッチ次元, チャネル次元は含まない)
-    patch_start_gen = iter_patch_position(
-        image.shape[2:], patch_size, overlap=overlap
+    patch_positions = tuple(
+        iter_patch_position(image.shape[2:], patch_size, overlap=overlap)
     )
+    starts_by_axis = tuple(
+        sorted(
+            {position[axis] for position in patch_positions}
+            | {max(image_len - patch_len, 0)}
+        )
+        for axis, (image_len, patch_len) in enumerate(
+            zip(image.shape[2:], patch_size)
+        )
+    )
+    patch_start_gen = product(*starts_by_axis)
     patch_slice_iter = (
         tuple(
             slice(start, start + patch_len)
@@ -58,8 +69,8 @@ def stitch_logits(
             torch.ones_like(first_patch_cpu)
             if mode == BlendMode.CONSTANT
             else get_gaussian_kernel(
-                tuple(patch_shape), sigma_scale
-            ).to("cpu")
+                tuple(patch_shape), tuple(patch_shape * sigma_scale)
+            ).to(device="cpu", dtype=first_patch_cpu.dtype)
         )
 
         if output_size is None:
@@ -93,9 +104,8 @@ def stitch_logits(
             canvas[slc].addcmul_(patch_cpu, importance_map)
             weight_map[slc] += importance_map
 
-        if mode != BlendMode.CONSTANT:
-            weight_map.clamp_(min=1e-8)
-            canvas.div_(weight_map)
+        weight_map.clamp_(min=torch.finfo(weight_map.dtype).tiny)
+        canvas.div_(weight_map)
 
         # 元のデバイスへ戻す
         return canvas.to(original_device)

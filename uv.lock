@@ -321,17 +321,6 @@ wheels = [
 ]
 
 [[package]]
-name = "causal-conv1d"
-version = "1.5.3.post1"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "ninja" },
-    { name = "packaging" },
-    { name = "torch" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/64/cb/104778c728dc3d5ea3bf65a484e3a4cdbe894bdaa2586320e2f61d007b8c/causal_conv1d-1.5.3.post1.tar.gz", hash = "sha256:aba1b717484472d0b2f2e40520a1c03f35fe5155555bd753d1c324afc56ba468", size = 24198, upload-time = "2025-10-10T10:16:23.921Z" }
-
-[[package]]
 name = "certifi"
 version = "2025.11.12"
 source = { registry = "https://pypi.org/simple" }
@@ -1428,21 +1417,6 @@ wheels = [
 ]
 
 [[package]]
-name = "mamba-ssm"
-version = "2.2.6.post3"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "einops" },
-    { name = "ninja" },
-    { name = "packaging" },
-    { name = "setuptools" },
-    { name = "torch" },
-    { name = "transformers" },
-    { name = "triton" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/b6/0c/9373a469ff7a33bdd0644e55fa45165ba3900274dcf7fe9f10ccc232aef9/mamba_ssm-2.2.6.post3.tar.gz", hash = "sha256:826a3cdb651959f191dac64502f8a29627d9116fe6bb7c57e4f562da1aea7bf3", size = 113913, upload-time = "2025-10-10T06:00:44.939Z" }
-
-[[package]]
 name = "markdown"
 version = "3.10.2"
 source = { registry = "https://pypi.org/simple" }
@@ -1578,7 +1552,6 @@ dependencies = [
     { name = "batchgenerators" },
     { name = "batchgeneratorsv2" },
     { name = "blosc2" },
-    { name = "causal-conv1d" },
     { name = "certifi" },
     { name = "charset-normalizer" },
     { name = "connected-components-3d" },
@@ -1605,7 +1578,6 @@ dependencies = [
     { name = "lazy-loader" },
     { name = "lightning" },
     { name = "linecache2" },
-    { name = "mamba-ssm" },
     { name = "markupsafe" },
     { name = "matplotlib" },
     { name = "medpy" },
@@ -1683,7 +1655,6 @@ requires-dist = [
     { name = "batchgenerators", specifier = "==0.25.1" },
     { name = "batchgeneratorsv2", specifier = "==0.3.0" },
     { name = "blosc2", specifier = "==3.11.1" },
-    { name = "causal-conv1d", specifier = "==1.5.3.post1" },
     { name = "certifi", specifier = "==2025.11.12" },
     { name = "charset-normalizer", specifier = "==3.4.4" },
     { name = "connected-components-3d", specifier = "==3.26.1" },
@@ -1710,7 +1681,6 @@ requires-dist = [
     { name = "lazy-loader", specifier = "==0.4" },
     { name = "lightning", specifier = ">=2.6.1" },
     { name = "linecache2", specifier = "==1.0.0" },
-    { name = "mamba-ssm", specifier = "==2.2.6.post3" },
     { name = "markupsafe", specifier = "==3.0.3" },
     { name = "matplotlib", specifier = "==3.10.7" },
     { name = "medpy", specifier = "==0.5.2" },
