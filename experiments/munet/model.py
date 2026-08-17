@@ -4,6 +4,7 @@ from experiments.trainer import UNetTrainingModule
 from monai.data.utils import iter_patch_position
 import torch
 import torch.nn.functional as F
+from torch.utils.checkpoint import checkpoint
 from monai.losses import DiceCELoss
 from typing import Any, Generator
 from experiments.config import image_key, label_key
@@ -81,7 +82,7 @@ class MUNetTrainingModule(UNetTrainingModule):
             gamma=self.gamma,
         )
         self.automatic_optimization = False
-        self.cache_skip_level = 1
+        self.cache_skip_level = 2
 
     def split_to_patch(
         self, image: torch.Tensor, label: torch.Tensor | None = None
@@ -130,11 +131,42 @@ class MUNetTrainingModule(UNetTrainingModule):
         lasts = []
 
         for patch_img, _, patch_pos in patches:
-            skips = self.unet.encoder(patch_img)
+            skips = checkpoint(
+                self.unet.encoder,
+                patch_img,
+                use_reentrant=False,
+            )
             skips_map[patch_pos] = skips[self.cache_skip_level : -1]
             lasts.append(PatchFeature(skips[-1], patch_pos))
 
-        bottleneck_features = self.bottleneck(tuple(lasts))
+        patch_positions = tuple(last.pos for last in lasts)
+
+        def checkpointed_bottleneck(*features: torch.Tensor):
+            # Checkpoint recomputation must follow the same operations as the
+            # original forward instead of taking the positional-encoding cache.
+            self.bottleneck.pe.cached_penc = None
+            self.bottleneck.pe.cached_shape = None
+            patch_features = tuple(
+                PatchFeature(feature, pos)
+                for feature, pos in zip(features, patch_positions, strict=True)
+            )
+            return tuple(
+                patch.feature for patch in self.bottleneck(patch_features)
+            )
+
+        bottleneck_tensors = checkpoint(
+            checkpointed_bottleneck,
+            *(last.feature for last in lasts),
+            use_reentrant=False,
+        )
+        bottleneck_features = tuple(
+            PatchFeature(feature, pos)
+            for feature, pos in zip(
+                bottleneck_tensors,
+                patch_positions,
+                strict=True,
+            )
+        )
         # ma = 0.
         # for b, l in zip(bottleneck_features, lasts):
         #     ma = max(ma, (b.feature - l.feature).abs().max().item())
@@ -166,7 +198,9 @@ class MUNetTrainingModule(UNetTrainingModule):
             results = []
             opt = self.optimizers()
             opt.zero_grad()
-            for patch_img, patch_label, out, patch_pos in outs:
+            for patch_index, (patch_img, patch_label, out, patch_pos) in enumerate(
+                outs
+            ):
                 # p_out = self.unet(patch_img)
                 # if self.deep_supervision:
                 #     loss = 0
@@ -181,9 +215,12 @@ class MUNetTrainingModule(UNetTrainingModule):
                 loss = self.loss(out, patch_label) / len(patches)
                 # print(top_loss, loss * len(patches))
                 # print(self.global_step)
-                self.manual_backward(loss, retain_graph=True)
+                self.manual_backward(
+                    loss,
+                    retain_graph=patch_index < len(patches) - 1,
+                )
                 all_loss += loss.detach()
-                results.append((out.detach(), patch_pos))
+                results.append((out.detach().cpu(), patch_pos))
             scheduler = self.lr_schedulers()
             opt.step()
             scheduler.step()

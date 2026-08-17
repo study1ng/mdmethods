@@ -170,18 +170,26 @@ class LogCallback(Callback):
             if action == "label":
                 v = torch.argmax(v, dim=1, keepdim=True)
             bk = self.label_key if action == "label" else self.image_key
-            batch[bk] = v
-            for item in decollate_batch(batch):
-                if not isinstance(item[bk], MetaTensor):
-                    item[bk] = MetaTensor(item[bk])
+            items = decollate_batch(batch)
+            values = decollate_batch(v)
+            for item, value in zip(items, values, strict=True):
+                image_meta = (
+                    item[self.image_key].meta
+                    if isinstance(item[self.image_key], MetaTensor)
+                    else {}
+                )
+                item[bk] = MetaTensor(value, meta=dict(image_meta))
                 if action == "label" and test:
                     # オリジナルの画像と比較できるのは推論時だけなのでこの場合に限ってラベルをinvertするのは推論時だけ
                     item = invert(item, image_key=self.image_key, label_key=self.label_key)
-                orig = item[bk].meta.get("filename_or_obj", "unknown.nii.gz")
-                if isinstance(orig, str):
-                    origstem = orig.split("/")[-1].split(".")[0]
-                else:
-                    origstem = "unknown"
+                origstem = item.get("name")
+                if not isinstance(origstem, str):
+                    orig = image_meta.get("filename_or_obj", "unknown.nii.gz")
+                    origstem = (
+                        orig.split("/")[-1].split(".")[0]
+                        if isinstance(orig, str)
+                        else "unknown"
+                    )
                 item[bk].meta["filename_or_obj"] = f"{stage}_{epoch}_{origstem}_{k}.nii.gz"
                 if item[bk].dtype == torch.bfloat16:
                     item[bk] = item[bk].to(torch.float32)

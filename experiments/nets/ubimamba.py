@@ -47,7 +47,7 @@ class BiMambaBlock(Block):
         x_norm = self.norm(x_flat)
         x_flip = x_norm.flip([1]).contiguous()
         x_mamba = self.mambas[0](x_norm)
-        x_flip_mamba = self.mambas[1](x_flip)
+        x_flip_mamba = self.mambas[1](x_flip).flip([1]).contiguous()
         x_mamba = torch.cat([x_mamba, x_flip_mamba], dim=-1)
         x_mamba = self.out_proj(x_mamba)
         out = x_mamba.transpose(-1, -2).reshape(B, self.output_channel, *img_dims)
