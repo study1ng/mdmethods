@@ -12,13 +12,22 @@ from experiments.config import label_key, image_key
 from experiments.utils.wraputils import element_wise
 from lightning.pytorch.trainer.states import RunningStage
 
-def _invert(item: MetaTensor | Tensor, transform_info):
+def _invert(
+    item: MetaTensor | Tensor,
+    transform_info,
+    *,
+    resample_mode: str | None = None,
+):
     cls = transform_info["class"]
     ext = transform_info["extra_info"]
     match cls:
         case "CropForeground":
             if "pad_info" in ext:
-                item = _invert(item, ext["pad_info"])
+                item = _invert(
+                    item,
+                    ext["pad_info"],
+                    resample_mode=resample_mode,
+                )
             orig = transform_info["orig_size"]
             cropped = ext["cropped"]
             pos = [
@@ -41,16 +50,14 @@ def _invert(item: MetaTensor | Tensor, transform_info):
             return item[indices]
 
         case "SpatialResample":
-            a = ext["src_affine"]
-            ia = torch.inverse(a)
             resampler = SpatialResample(
-                mode=ext["mode"],
+                mode=resample_mode or ext["mode"],
                 align_corners=ext["align_corners"],
                 padding_mode=ext["padding_mode"],
             )
             output_data = resampler(
                 img=item,
-                dst_affine=ia,
+                dst_affine=ext["src_affine"],
                 spatial_size=transform_info["orig_size"],
             )
             return output_data
@@ -72,7 +79,7 @@ def _invert(item: MetaTensor | Tensor, transform_info):
         
         case "RandRotated" | "RandFlipd" | "RandZoomd" | "RandZoom" | "RandRotate":
             if "class" in ext:
-                return _invert(item, ext)
+                return _invert(item, ext, resample_mode=resample_mode)
             return item
         
         case "Flip":
@@ -91,22 +98,38 @@ def _invert(item: MetaTensor | Tensor, transform_info):
 
 
 def invert(
-    item: dict[str, MetaTensor | Tensor], image_key=image_key, label_key=label_key
+    value: MetaTensor | Tensor,
+    reference: MetaTensor,
+    *,
+    is_label: bool,
 ) -> MetaTensor:
-    image = item[image_key]
-    label = item[label_key]
-    transforms = image.applied_operations
+    transforms = reference.applied_operations
     for transform_info in reversed(transforms):
         try:
-            label = _invert(label, transform_info)
-            if not isinstance(item, MetaTensor):
-                item = MetaTensor(item)
+            value = _invert(
+                value,
+                transform_info,
+                resample_mode="nearest" if is_label else None,
+            )
         except Exception as e:
-            print(label.shape)
+            print(value.shape)
             pprint(transform_info)
             raise e from e
-    item[label_key] = MetaTensor(label, meta=item[image_key].meta).to(torch.int16)
-    return item
+
+    meta = dict(reference.meta)
+    original_affine = meta.get("original_affine", reference.affine)
+    original_shape = meta.get("spatial_shape")
+    meta.pop("affine", None)
+    if original_shape is not None:
+        original_shape = tuple(int(size) for size in original_shape)
+        if tuple(value.shape[1:]) != original_shape:
+            raise RuntimeError(
+                "inverse transform did not restore the original spatial shape: "
+                f"expected {original_shape}, got {tuple(value.shape[1:])}"
+            )
+        meta["spatial_shape"] = original_shape
+    value = MetaTensor(value, affine=original_affine, meta=meta)
+    return value.to(torch.int16) if is_label else value
 
 
 class LogCallback(Callback):
@@ -178,10 +201,15 @@ class LogCallback(Callback):
                     if isinstance(item[self.image_key], MetaTensor)
                     else {}
                 )
+                reference = item[self.image_key]
+                is_label = action == "label" or k in {"label", "gt", "out"}
                 item[bk] = MetaTensor(value, meta=dict(image_meta))
-                if action == "label" and test:
-                    # オリジナルの画像と比較できるのは推論時だけなのでこの場合に限ってラベルをinvertするのは推論時だけ
-                    item = invert(item, image_key=self.image_key, label_key=self.label_key)
+                if isinstance(reference, MetaTensor):
+                    item[bk] = invert(
+                        item[bk],
+                        reference,
+                        is_label=is_label,
+                    )
                 origstem = item.get("name")
                 if not isinstance(origstem, str):
                     orig = image_meta.get("filename_or_obj", "unknown.nii.gz")

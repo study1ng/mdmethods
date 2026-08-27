@@ -122,11 +122,13 @@ class CropSegDataModule(L.LightningDataModule):
         preprocessed_dir: str | Path,
         plan: Plan,
         num_workers: int = 4,
+        direct_test_dir: bool = False,
     ):
         super().__init__()
         self.preprocessed_dir = Path(preprocessed_dir)
         self.plan = plan
         self.num_workers = num_workers
+        self.direct_test_dir = direct_test_dir
         self.img_key = [image_key]
         self.label_key = [label_key]
         self.keys = self.img_key + self.label_key
@@ -160,7 +162,7 @@ class CropSegDataModule(L.LightningDataModule):
                 return Dataset(
                     [{image_key: pimg, "name": filekey(pimg)}
                     for pimg in pimgs_files
-                    if pimg.suffix == ".gz"],
+                    if pimg.name.endswith(".nii.gz")],
                     transforms
                 )
 
@@ -182,7 +184,11 @@ class CropSegDataModule(L.LightningDataModule):
             transforms = val_transforms(self.plan, self.img_key, self.label_key)
             self.val_dataset = _get_dataset(pimgs, plabels, transforms=transforms)
         elif stage == "test":
-            pimgs = self.preprocessed_dir / "test" / image_key
+            pimgs = (
+                self.preprocessed_dir
+                if self.direct_test_dir
+                else self.preprocessed_dir / "test" / image_key
+            )
             transforms = test_transforms(self.plan, self.img_key)
             self.test_transforms = transforms
             self.test_dataset = _get_dataset(pimgs, transforms=transforms)

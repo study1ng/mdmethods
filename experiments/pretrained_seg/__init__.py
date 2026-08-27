@@ -4,8 +4,11 @@ from experiments.prune import NoPruner as Pruner
 from experiments.analyze import CTAnalyzer as Analyzer
 from experiments.pretrained_seg.datamodule import CropSegDataModule as DataModule
 from experiments.pretrained_seg.model import SegmentationModule as Model
+from experiments.argument_adaptor import ArgumentAdaptor
+from experiments.plan import Plan
 import torch
 from experiments.utils.fsutils import resolved_path
+from experiments.utils import nowstring
 
 
 def prune(args, meta):
@@ -57,8 +60,28 @@ class PlainSegInferencer(PlannedInferencer):
         super().__init__(args, parsed)
         torch.set_float32_matmul_precision("medium")
 
+    def get_argument_parser(self):
+        parser = ArgumentAdaptor.get_argument_parser(self)
+        parser.add_argument("data", type=resolved_path)
+        parser.add_argument("save_path", type=resolved_path)
+        parser.add_argument("plan_path", type=resolved_path)
+        parser.add_argument("-c", "--ckpt", required=True, type=resolved_path)
+        parser.add_argument("-d", "--devices", type=int, default=[0], nargs="+")
+        return parser
+
+    def parse_args(self, args):
+        ArgumentAdaptor.parse_args(self, args)
+        self.data = self.args.data
+        self.save_path = self.args.save_path / self.meta.lib
+        if self.meta.experiment_name is not None:
+            self.save_path = self.save_path / self.meta.experiment_name
+        self.save_path = self.save_path / nowstring()
+        self.plan = Plan(self.args.plan_path)
+        self.devices = self.args.devices
+        self.ckpt_path = self.args.ckpt
+
     def _build_data_module(self):
-        return DataModule(self.preprocessed, self.plan)
+        return DataModule(self.data, self.plan, direct_test_dir=True)
 
     def _build_module(self):
         builder = Builder().based_on_ckpt(self.ckpt_path).to_params()
