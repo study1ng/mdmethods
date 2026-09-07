@@ -1,4 +1,5 @@
 import lightning as L
+from copy import deepcopy
 from lightning.pytorch.callbacks import Callback
 import nibabel
 from torch import Tensor
@@ -106,6 +107,7 @@ def invert(
     transforms = reference.applied_operations
     for transform_info in reversed(transforms):
         try:
+            transform_info = deepcopy(transform_info)
             value = _invert(
                 value,
                 transform_info,
