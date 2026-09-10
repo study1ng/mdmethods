@@ -89,9 +89,13 @@ def _invert(
             return torch.flip(item, axes)
             
         case "Zoom":
+            if not isinstance(item, MetaTensor):
+                item = MetaTensor(item)
             return Zoom.inverse_transform(None, item, transform_info)
         
         case "Rotate":
+            if not isinstance(item, MetaTensor):
+                item = MetaTensor(item)
             return Rotate.inverse_transform(None, item, transform_info)
 
         case _:
