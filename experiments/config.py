@@ -8,10 +8,6 @@ def default_loggers(save_path: Path, experiment_name: str):
     from lightning.pytorch.loggers import CSVLogger, MLFlowLogger, TensorBoardLogger
     return [
         CSVLogger(save_path, name="training.log"),
-        MLFlowLogger(
-            experiment_name,
-            tracking_uri="sqlite:///mlflow.db"
-        ),
         TensorBoardLogger(save_path, name=experiment_name),
     ]
 

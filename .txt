@@ -1,0 +1,2 @@
+uv run python main.py munet inference <画像ディレクトリ> <出力ルート> <学習時のplan.json> \
+  --ckpt <MUNetのチェックポイント.ckpt> --devices 0

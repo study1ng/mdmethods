@@ -1,6 +1,8 @@
 from experiments.nets.base import UNet, UNetReinitializer
 from experiments.nets.builder import Builder
-from experiments.pretrained_seg import PlainSegmentation, analyze, prune, inference
+from experiments.pretrained_seg import PlainSegmentation, PlainSegInferencer, analyze, prune
+from experiments.plan import Plan
+import torch
 from lightning.pytorch.callbacks import BaseFinetuning
 from experiments.munet.datamodule import NoCropDataModule as DataModule
 from experiments.munet.model import MUNetTrainingModule as Model
@@ -40,3 +42,60 @@ class BottleneckSeg(PlainSegmentation):
 
 def train(args, parsed):
     BottleneckSeg(args, parsed)()
+
+
+class MUNetInferencer(PlainSegInferencer):
+    def _build_module(self):
+        # Validate metadata before constructing the model or starting the trainer.
+        # Plan and builder objects require loading the full, trusted checkpoint.
+        checkpoint = torch.load(self.ckpt_path, map_location="cpu", weights_only=False)
+        if not isinstance(checkpoint, dict):
+            raise ValueError("Expected a MUNet Lightning checkpoint.")
+        state = checkpoint.get("state_dict", {})
+        if not any(key.startswith("bottleneck.") for key in state):
+            raise ValueError("The checkpoint has no MUNet bottleneck weights.")
+        hparams = checkpoint.get("hyper_parameters", {})
+        required = (
+            "builder", "plan", "overlap_scale",
+            "global_positional_encoding_proposition", "gamma",
+        )
+        missing = [key for key in required if key not in hparams]
+        if missing:
+            raise ValueError(f"MUNet checkpoint is missing hyperparameters: {missing}")
+        saved_plan = hparams["plan"]
+        if not isinstance(saved_plan, Plan):
+            raise ValueError("The checkpoint must contain the training Plan object.")
+        # Compare effective settings, not file paths or batch size.
+        plan_fields = (
+            "patch_size", "spacing", "mean", "std",
+            "percentile_00_5", "percentile_99_5",
+            "pool_strides", "conv_kernel_size", "stem_channel",
+            "max_feature_channel", "n_stages", "dim",
+        )
+        mismatched = [
+            field for field in plan_fields
+            if not hasattr(saved_plan, field)
+            or getattr(saved_plan, field) != getattr(self.plan, field)
+        ]
+        if mismatched:
+            raise ValueError(
+                f"Inference plan differs from the training plan: {mismatched}. "
+                "Use the plan used to train this checkpoint."
+            )
+        # Release checkpoint tensors before Lightning reads them for restoration.
+        del state, hparams, saved_plan, checkpoint
+        try:
+            return Model.load_from_checkpoint(
+                self.ckpt_path, map_location="cpu", strict=True,
+                weights_only=False, plan=self.plan,
+            )
+        except FileNotFoundError as exc:
+            raise FileNotFoundError(
+                "MUNet restoration needs the checkpoints referenced by its saved "
+                "builder. Make the original pretrained checkpoints available at "
+                f"their recorded paths. Missing file: {exc.filename or exc}"
+            ) from exc
+
+
+def inference(args, meta):
+    MUNetInferencer(args, meta)()

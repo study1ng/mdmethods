@@ -1,6 +1,7 @@
 from experiments.nets.base import UNet, UNetReinitializer
 from experiments.nets.builder import Builder
-from experiments.pretrained_seg import PlainSegmentation, analyze, prune, inference
+from experiments.pretrained_seg import PlainSegmentation, analyze, prune
+from experiments.munet import inference
 from lightning.pytorch.callbacks import BaseFinetuning
 from experiments.munet.datamodule import NoCropDataModule as DataModule
 from experiments.munet.model import MUNetTrainingModule as Model
