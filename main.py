@@ -7,7 +7,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "method",
         type=str,
-        choices=["analyze", "prune", "train", "inference"],
+        choices=["analyze", "prune", "train", "inference", "custom"],
     )
     parser.add_argument("--experiment_name", type=str, default=None)
     parser.add_argument("--help-main", action="help")

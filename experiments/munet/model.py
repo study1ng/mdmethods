@@ -186,6 +186,25 @@ class MUNetTrainingModule(UNetTrainingModule):
             # print("diff mean between two networks", (out - p_out).abs().mean().item())
             yield patch_img, patch_label, out, patch_pos
 
+    def _collect_patch_outputs(self, patches, process_patch=None):
+        """Process each patch before collecting detached logits on CPU."""
+        results = []
+        for patch_index, (_, patch_label, out, patch_pos) in enumerate(self(patches)):
+            if process_patch is not None:
+                process_patch(patch_index, patch_label, out)
+            results.append((out.detach().cpu(), patch_pos))
+        return tuple(results)
+
+    def _predict_from_patch_outputs(self, results, output_size):
+        """Blend CPU logits and produce labels using the training output flow."""
+        with torch.no_grad():
+            out = stitch_logits(
+                results,
+                BlendMode.GAUSSIAN,
+                output_size=output_size,
+            )
+        return out.argmax(1, keepdim=True)
+
     def training_step(self, batch, _):
         image, label = batch[image_key], batch[label_key]
         # image: the whole image
@@ -193,14 +212,12 @@ class MUNetTrainingModule(UNetTrainingModule):
         # B, C, H, W, D, P: ボトルネックにおけるバッチサイズ, チャネル数, 高さ, 幅, 深さ, パッチ数
         patches = self.split_to_patch(image, label)
         try:
-            outs = self(patches)
             all_loss = 0.0
-            results = []
             opt = self.optimizers()
             opt.zero_grad()
-            for patch_index, (patch_img, patch_label, out, patch_pos) in enumerate(
-                outs
-            ):
+
+            def process_patch(patch_index, patch_label, out):
+                nonlocal all_loss
                 # p_out = self.unet(patch_img)
                 # if self.deep_supervision:
                 #     loss = 0
@@ -220,7 +237,7 @@ class MUNetTrainingModule(UNetTrainingModule):
                     retain_graph=patch_index < len(patches) - 1,
                 )
                 all_loss += loss.detach()
-                results.append((out.detach().cpu(), patch_pos))
+            results = self._collect_patch_outputs(patches, process_patch)
             scheduler = self.lr_schedulers()
             opt.step()
             scheduler.step()
@@ -238,13 +255,7 @@ class MUNetTrainingModule(UNetTrainingModule):
         )
         self.log("training loss", all_loss, prog_bar=True, on_step=True, on_epoch=True)
         self.log("lr", self.optimizers().param_groups[0]["lr"], prog_bar=True)
-        with torch.no_grad():
-            out = stitch_logits(
-                tuple(results),
-                BlendMode.GAUSSIAN,
-                output_size=image.shape[2:],
-            )
-        pred = out.argmax(1, keepdim=True)
+        pred = self._predict_from_patch_outputs(results, image.shape[2:])
         return {
             "loss": all_loss,
             "image": ("image", image.detach().cpu()),
@@ -286,14 +297,9 @@ class MUNetTrainingModule(UNetTrainingModule):
         image = batch[image_key]  # (B,C,H,W,D)
         label = batch[label_key]
         patches = self.split_to_patch(image, label)
-        outs = self(patches)
-        out = stitch_logits(
-            tuple((out, patch_pos) for _, __, out, patch_pos in outs),
-            BlendMode.GAUSSIAN,
-            output_size=image.shape[2:],
-        )
-        pred = out.argmax(1, keepdim=True)
-        self.metric(pred, label)
+        results = self._collect_patch_outputs(patches)
+        pred = self._predict_from_patch_outputs(results, image.shape[2:])
+        self.metric(pred.to(label.device), label)
         return {
             "image": ("image", image.detach().cpu()),
             "gt": ("image", label.detach().cpu()),
@@ -313,13 +319,8 @@ class MUNetTrainingModule(UNetTrainingModule):
     def test_step(self, batch, _):
         image = batch[image_key]  # (B,C,H,W,D)
         patches = self.split_to_patch(image)
-        outs = self(patches)
-        out = stitch_logits(
-            tuple((out, patch_pos) for _, __, out, patch_pos in outs),
-            BlendMode.GAUSSIAN,
-            output_size=image.shape[2:],
-        )
-        pred = out.argmax(1, keepdim=True)
+        results = self._collect_patch_outputs(patches)
+        pred = self._predict_from_patch_outputs(results, image.shape[2:])
         return {
             "image": ("image", image.detach().cpu()),
             "out": ("image", pred.detach().cpu()),

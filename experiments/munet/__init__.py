@@ -6,6 +6,7 @@ import torch
 from lightning.pytorch.callbacks import BaseFinetuning
 from experiments.munet.datamodule import NoCropDataModule as DataModule
 from experiments.munet.model import MUNetTrainingModule as Model
+from experiments import ArgumentAdaptor
 
 class BottleneckFinetuning(BaseFinetuning):
     def __init__(self):
@@ -99,3 +100,12 @@ class MUNetInferencer(PlainSegInferencer):
 
 def inference(args, meta):
     MUNetInferencer(args, meta)()
+
+class MUNetCustom(ArgumentAdaptor):
+    def get_argument_parser(self):
+        parser = super().get_argument_parser()
+        return parser
+
+    def parse_args(self, args):
+        super().parse_args(args)
+        self.plan = Plan(self.args.plan_path)
