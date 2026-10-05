@@ -133,7 +133,25 @@ class MUNetCustom(MUNetInferencer):
         if self.save_path.exists():
             raise FileExistsError(f"Output directory already exists: {self.save_path}")
 
+    def _evaluation_num_classes(self):
+        head = self.module.unet.decoder.head
+        heads = list(head) if isinstance(head, torch.nn.ModuleList) else [head]
+        channels = [getattr(item, "output_channel", None) for item in heads]
+        if not channels or any(
+            not isinstance(channel, int) or channel < 2 for channel in channels
+        ):
+            raise ValueError(
+                "Evaluation requires output heads with at least one foreground "
+                f"class (including background, channels={channels})."
+            )
+        if len(set(channels)) != 1:
+            raise ValueError(f"Output heads have inconsistent class counts: {channels}")
+        return channels[0]
+
     def __call__(self):
+        # Reinitializing a head may leave unet.output_channel at its old value.
+        # Read the restored heads and validate before starting expensive inference.
+        num_classes = self._evaluation_num_classes()
         print(f"Inference and metrics output: {self.save_path}")
         original_meta = self.meta
         self.meta = copy(self.meta)
@@ -148,7 +166,7 @@ class MUNetCustom(MUNetInferencer):
             write_metrics(
                 self.cases, self.save_path,
                 epoch=self.trainer.current_epoch,
-                num_classes=self.module.unet.output_channel,
+                num_classes=num_classes,
                 dice=self.args.dice, hd=self.args.hd,
             )
         return result
