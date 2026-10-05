@@ -6,7 +6,10 @@ import torch
 from lightning.pytorch.callbacks import BaseFinetuning
 from experiments.munet.datamodule import NoCropDataModule as DataModule
 from experiments.munet.model import MUNetTrainingModule as Model
-from experiments import ArgumentAdaptor
+from copy import copy
+import argparse
+from experiments.config import image_key, label_key
+from experiments.munet.evaluation import paired_cases, write_metrics
 
 class BottleneckFinetuning(BaseFinetuning):
     def __init__(self):
@@ -101,11 +104,55 @@ class MUNetInferencer(PlainSegInferencer):
 def inference(args, meta):
     MUNetInferencer(args, meta)()
 
-class MUNetCustom(ArgumentAdaptor):
+class MUNetCustom(MUNetInferencer):
     def get_argument_parser(self):
-        parser = super().get_argument_parser()
+        parser = argparse.ArgumentParser()
+        actions = parser.add_subparsers(dest="action", required=True)
+        val_parser = actions.add_parser(
+            "val", parents=[super().get_argument_parser()], add_help=False
+        )
+        val_parser.add_argument("--dice", action="store_true")
+        val_parser.add_argument("--hd", type=self._hd_percentile, default=None)
         return parser
+
+    @staticmethod
+    def _hd_percentile(value):
+        percentile = float(value)
+        # MONAI treats zero as an unspecified percentile (maximum distance).
+        if not 0 < percentile <= 100:
+            raise argparse.ArgumentTypeError("--hd must be greater than 0 and at most 100")
+        return percentile
 
     def parse_args(self, args):
         super().parse_args(args)
-        self.plan = Plan(self.args.plan_path)
+        self.dataset_root = self.data
+        self.cases = paired_cases(
+            self.dataset_root / image_key, self.dataset_root / label_key
+        )
+        self.data = self.dataset_root / image_key
+        if self.save_path.exists():
+            raise FileExistsError(f"Output directory already exists: {self.save_path}")
+
+    def __call__(self):
+        print(f"Inference and metrics output: {self.save_path}")
+        original_meta = self.meta
+        self.meta = copy(self.meta)
+        self.meta.method = "inference"
+        try:
+            result = super().__call__()
+        finally:
+            self.meta = original_meta
+        # All distributed workers must finish writing before evaluation reads files.
+        self.trainer.strategy.barrier()
+        if self.trainer.is_global_zero:
+            write_metrics(
+                self.cases, self.save_path,
+                epoch=self.trainer.current_epoch,
+                num_classes=self.module.unet.output_channel,
+                dice=self.args.dice, hd=self.args.hd,
+            )
+        return result
+
+
+def custom(args, meta):
+    MUNetCustom(args, meta)()

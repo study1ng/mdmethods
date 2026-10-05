@@ -79,7 +79,7 @@ uv run python main.py <lib> <method> \
 
 `<lib>`には`experiments/`直下の手法名を指定します。`--experiment_name`を指定すると、`experiments/<lib>/experiments/<実験名>.py`が読み込まれます。
 
-`<method>`に指定できる処理は次の4種類です。
+`<method>`に指定できる処理は次の5種類です。
 
 | method | 内容 |
 | --- | --- |
@@ -87,6 +87,7 @@ uv run python main.py <lib> <method> \
 | `prune` | 解析結果とプランに基づいて対象データを選別します |
 | `train` | モデルを学習します |
 | `inference` | 学習済みチェックポイントで推論します |
+| `custom` | 各実験独自の処理を実行します |
 
 モジュールによっては一部の処理を実装していません。利用可能な引数は対象モジュールのヘルプで確認してください。
 
@@ -163,6 +164,44 @@ Mamba 演算のみ CPU 用の代替モジュールに置き換えるため、実
 ```bash
 uv run python -m unittest discover -s tests -p 'test_munet_inference.py' -v
 ```
+
+### MUNet の推論と定量評価
+
+```bash
+uv run python main.py munet custom val \
+  <データセット> <出力ルート> <学習時のプランJSON> \
+  --ckpt <MUNetのチェックポイント.ckpt> --devices 0 --dice --hd 95
+```
+
+データセット直下の `image/` と `label/` に、対応する `.nii.gz` を置きます。
+既存の `filekey` と同じく、ファイル名の最初の `.` または `_` より前を症例IDとします。
+各ディレクトリ内のID重複や、画像・ラベル間の症例不足はエラーになります。
+`--experiment_name` と推論用の引数は `inference` と共通です。
+既存の推論・復元・保存処理を利用し、出力先も
+`<出力ルート>/munet/[実験名/]<日時>/` になります。
+既存の同名出力ディレクトリには書き込みません。
+
+保存した予測と正解を元の画像グリッド上で比較し、`metrics/` に次のCSVを作成します。
+
+| ファイル | 行の単位 |
+| --- | --- |
+| `full.csv` | 症例ID (`case`) × 臓器ラベルID (`organ`) |
+| `case.csv` | 症例ごとの臓器平均 |
+| `organ.csv` | 臓器ごとの症例平均 |
+
+背景 (0) を除いたモデルの全ラベルIDを対象とします。
+`--dice` を指定した場合のみ `dice` 列、`--hd 95` を指定した場合のみ
+`hd95_mm` 列を出力します。HDのパーセンテージは `0 < p <= 100` で、
+`--hd 100` は最大Hausdorff距離です。両方省略すると推論を行い、CSVはID列だけになります。
+DiceはMONAIの `DiceMetric`、HDはMONAIの `compute_hausdorff_distance` をCPUで使用します。
+HDは両方向の距離のパーセンタイルの最大値で、元画像のvoxel spacingを使ったmm単位です。
+NIfTIの空間単位が未指定の場合はmmとして扱います。画像とラベルのshape・affineが
+一致しない場合や、HD計算対象のグリッドにshearがある場合はエラーになります。
+
+空の正解に対するDiceはMONAIの既定 (`ignore_empty=True`) に従い `nan` です。
+空のマスクに対するHDもMONAIの結果 (`nan` または `inf`) をそのまま記録します。
+平均は `nan` を除外し、すべて `nan` の場合は `nan`、`inf` を含む場合は `inf` です。
+指標が未定義の症例・臓器について有限値に置き換えることはしません。
 
 ## データと生成物
 
