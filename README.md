@@ -201,8 +201,13 @@ DiceはMONAIの `DiceMetric`、HDはMONAIの `compute_hausdorff_distance` をCPU
 補間による変化を抑える方式ですが、voxel単位の変化がなくなることを保証するものではありません。
 予測・正解ラベルをMONAIの `ResampleToMatch` でこの共通グリッドへ合わせてから評価します。
 補間は最近傍、変換元ラベルの範囲外からサンプリングする値は背景 (0) です。
-変換は評価用のメモリ上だけで行い、保存済み画像は変更しません。
-入力画像の輝度配列は読み込まず、グリッド情報だけを利用します。
+入力画像は同じグリッドへ線形補間（3Dではtrilinear）で変換します。
+元の保存済み画像は変更せず、直交化した入力画像・正解・予測を `orthogonal/` に保存します。
+`val` では既存の推論保存先、`metric` では指定した予測ディレクトリの直下に作ります。
+ファイル名は `test_<epoch>_<症例ID>_image.nii.gz`、`test_<epoch>_<症例ID>_gt.nii.gz`、
+`test_<epoch>_<症例ID>_out.nii.gz` で、epochは元の予測ファイル名から引き継ぎます。
+3種類は共通のshape・affine（mm単位）を持ち、保存するラベル配列で指標を計算します。
+既存の `orthogonal/` は上書きしません。途中で失敗した場合は部分的な出力が残ることがあります。
 HDは両方向の距離のパーセンタイルの最大値で、評価グリッドのvoxel spacingを使ったmm単位です。
 NIfTIの空間単位はmmに換算し、未指定の場合はmmとして扱います。
 入力画像にshearがある場合も、直交化した評価グリッド上でHDを計算します。
@@ -227,7 +232,8 @@ python main.py munet custom metric \
 `--experiment_name bd0` などの指定も可能ですが、指定した予測ディレクトリを直接使用します。
 
 指標計算とCSV出力は `custom val` と共通で、予測ディレクトリ直下の `metrics/` に
-`full.csv`・`case.csv`・`organ.csv` を保存します。既存の `metrics/` は上書きしません。
+`full.csv`・`case.csv`・`organ.csv` を保存し、`orthogonal/` に直交化画像を保存します。
+CLIの引数構造は変更ありません。既存の `metrics/`・`orthogonal/` は上書きしません。
 モデルのクラス数を参照しないため、評価対象は共通の評価グリッドへ変換した全症例の
 予測・正解に現れる前景ラベルIDの和集合です。
 両方に現れないラベルIDはCSVに含みません。背景 (0) は除外し、疎なラベルIDもそのまま記録します。

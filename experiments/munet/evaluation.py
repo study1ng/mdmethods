@@ -157,7 +157,19 @@ def _evaluation_grid(shape, affine):
     return tuple(int(size) for size in target_shape), target_affine, spacing
 
 
-def _case_labels(case, prediction_path, num_classes, hd):
+def _save_orthogonal(value, affine, path, *, is_label):
+    if path.exists():
+        raise FileExistsError(f"Output file already exists: {path}")
+    array = value.detach().cpu().numpy()
+    dtype = np.int64 if is_label else np.float32
+    image = nib.Nifti1Image(array, affine, dtype=dtype)
+    image.header.set_xyzt_units("mm")
+    image.set_qform(affine, code=1)
+    image.set_sform(affine, code=1)
+    nib.save(image, path)
+
+
+def _case_labels(case, prediction_path, num_classes, hd, *, orthogonal_dir=None):
     input_image = nib.load(case["input_image"])
     if len(input_image.shape) != 3:
         raise ValueError("Expected a 3D input image")
@@ -179,6 +191,24 @@ def _case_labels(case, prediction_path, num_classes, hd):
 
     prediction = aligned_labels(prediction_image)
     reference = aligned_labels(reference_image)
+    if orthogonal_dir is not None:
+        input_values = input_image.get_fdata(dtype=np.float32)
+        if not np.isfinite(input_values).all():
+            raise ValueError("Input image contains nonfinite intensities")
+        input_tensor = MetaTensor(torch.from_numpy(input_values)[None], affine=input_affine)
+        aligned_input = ResampleToMatch(mode="bilinear", padding_mode="zeros")(
+            input_tensor, target
+        )
+        prefix = prediction_path.name.removesuffix("_out.nii.gz")
+        for suffix, value, is_label in (
+            ("image", aligned_input.as_tensor()[0], False),
+            ("gt", reference[0, 0], True),
+            ("out", prediction[0, 0], True),
+        ):
+            _save_orthogonal(
+                value, target_affine, orthogonal_dir / f"{prefix}_{suffix}.nii.gz",
+                is_label=is_label,
+            )
     return prediction, reference, spacing
 
 
@@ -186,8 +216,10 @@ def write_metrics(cases, save_path: Path, *, epoch=None, num_classes=None, dice,
     if num_classes is not None and num_classes < 2:
         raise ValueError("Evaluation requires at least one foreground class")
     metrics_dir = save_path / "metrics"
-    if metrics_dir.exists():
-        raise FileExistsError(f"Metrics directory already exists: {metrics_dir}")
+    orthogonal_dir = save_path / "orthogonal"
+    for directory in (metrics_dir, orthogonal_dir):
+        if directory.exists():
+            raise FileExistsError(f"Output directory already exists: {directory}")
     predictions = _prediction_paths(cases, save_path, epoch)
     organs = set(range(1, num_classes)) if num_classes is not None else set()
     if num_classes is None:
@@ -209,9 +241,12 @@ def write_metrics(cases, save_path: Path, *, epoch=None, num_classes=None, dice,
         include_background=True, reduction="none", ignore_empty=True,
     ) if dice else None
     rows = []
+    orthogonal_dir.mkdir(parents=True, exist_ok=False)
     for name, case in cases.items():
         try:
-            prediction, reference, spacing = _case_labels(case, predictions[name], num_classes, hd)
+            prediction, reference, spacing = _case_labels(
+                case, predictions[name], num_classes, hd, orthogonal_dir=orthogonal_dir
+            )
             for organ in organs:
                 row = {"case": name, "organ": organ}
                 # One binary organ at a time also supports noncontiguous label IDs.
