@@ -194,12 +194,18 @@ uv run python main.py munet custom val \
 `hd95_mm` 列を出力します。HDのパーセンテージは `0 < p <= 100` で、
 `--hd 100` は最大Hausdorff距離です。両方省略すると推論を行い、CSVはID列だけになります。
 DiceはMONAIの `DiceMetric`、HDはMONAIの `compute_hausdorff_distance` をCPUで使用します。
-予測・正解ラベルをMONAIの `ResampleToMatch` で入力画像のshape・affineへ合わせてから評価します。
+入力画像のaffineから評価用グリッドを作ります。軸方向をSVD（極分解）で最も近い直交方向へ
+補正し、voxel spacing・画像中心・軸の左右反転は維持します。
+元画像のvoxel境界の8隅をすべて覆うようにグリッドサイズを決めます。
+すでに直交している場合は元のグリッドを使います。軸平行化による大きな回転を避けて
+補間による変化を抑える方式ですが、voxel単位の変化がなくなることを保証するものではありません。
+予測・正解ラベルをMONAIの `ResampleToMatch` でこの共通グリッドへ合わせてから評価します。
 補間は最近傍、変換元ラベルの範囲外からサンプリングする値は背景 (0) です。
 変換は評価用のメモリ上だけで行い、保存済み画像は変更しません。
-HDは両方向の距離のパーセンタイルの最大値で、入力画像のvoxel spacingを使ったmm単位です。
+入力画像の輝度配列は読み込まず、グリッド情報だけを利用します。
+HDは両方向の距離のパーセンタイルの最大値で、評価グリッドのvoxel spacingを使ったmm単位です。
 NIfTIの空間単位はmmに換算し、未指定の場合はmmとして扱います。
-入力画像のグリッドにshearがある場合はHDを計算せずエラーになります。
+入力画像にshearがある場合も、直交化した評価グリッド上でHDを計算します。
 
 空の正解に対するDiceはMONAIの既定 (`ignore_empty=True`) に従い `nan` です。
 空のマスクに対するHDもMONAIの結果 (`nan` または `inf`) をそのまま記録します。
@@ -222,7 +228,7 @@ python main.py munet custom metric \
 
 指標計算とCSV出力は `custom val` と共通で、予測ディレクトリ直下の `metrics/` に
 `full.csv`・`case.csv`・`organ.csv` を保存します。既存の `metrics/` は上書きしません。
-モデルのクラス数を参照しないため、評価対象は入力画像のグリッドへ変換した全症例の
+モデルのクラス数を参照しないため、評価対象は共通の評価グリッドへ変換した全症例の
 予測・正解に現れる前景ラベルIDの和集合です。
 両方に現れないラベルIDはCSVに含みません。背景 (0) は除外し、疎なラベルIDもそのまま記録します。
 `custom val` は引き続きモデルの全前景クラスを対象とします。
@@ -230,10 +236,46 @@ python main.py munet custom metric \
 両コマンドとも、症例ごとの読み込み・グリッド確認・指標計算でエラーになった場合は、
 `input_image: {...}`・`prediction_label: {...}`・`reference_label: {...}` の形式で
 パス・shape・affine・spacing・空間単位・qform/sformを `pprint` で出力します。
-画像配列は表示しません。元のグリッドが異なる場合も入力画像のグリッドへリサンプリングします。
+画像配列は表示しません。元のグリッドが異なる場合も共通の評価グリッドへリサンプリングします。
 
 ```bash
 python main.py munet custom metric --module-help
+```
+
+直交化のCPU確認はコンテナ内で手動実行します。合成グリッドで直交性・spacing・中心・
+元画像の領域保持・左右反転を確認します。データセットや出力ファイルは作成しません。
+この確認はMONAIによるラベルのリサンプリング自体は検証しません。
+
+```bash
+python -m py_compile experiments/munet/evaluation.py
+python - <<'PY'
+from itertools import product
+import numpy as np
+from experiments.munet.evaluation import _evaluation_grid
+
+shape = np.array([9, 12, 15])
+for shear in (0.0, 0.0003, 0.2):
+    for reflection in (1, -1):
+        source = np.eye(4)
+        source[:3, :3] = [[2 * reflection, shear, 0], [0, 3, 0], [0, 0, 4]]
+        source[:3, 3] = [10, -20, 30]
+        size, target, spacing = _evaluation_grid(shape, source)
+        directions = target[:3, :3] / spacing
+        np.testing.assert_allclose(directions.T @ directions, np.eye(3), atol=1e-12)
+        np.testing.assert_allclose(spacing, np.linalg.norm(source[:3, :3], axis=0))
+        np.testing.assert_allclose(target[:3, :3] @ ((np.array(size) - 1) / 2) + target[:3, 3],
+                                   source[:3, :3] @ ((shape - 1) / 2) + source[:3, 3])
+        assert np.sign(np.linalg.det(target[:3, :3])) == reflection
+        corners = np.array(list(product(*[(-0.5, n - 0.5) for n in shape])))
+        world = corners @ source[:3, :3].T + source[:3, 3]
+        indices = (world - target[:3, 3]) @ np.linalg.inv(target[:3, :3]).T
+        assert (indices >= -0.5 - 1e-9).all()
+        assert (indices <= np.array(size) - 0.5 + 1e-9).all()
+        if shear == 0:
+            assert size == tuple(shape)
+            np.testing.assert_array_equal(target, source)
+print('grid checks passed')
+PY
 ```
 
 ## データと生成物

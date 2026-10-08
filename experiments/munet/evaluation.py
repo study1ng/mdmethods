@@ -1,10 +1,11 @@
-"""Evaluate saved inference labels on the input image voxel grid on CPU."""
+"""Evaluate labels on an orthogonal grid close to the input image on CPU."""
 
 import csv
 import math
 import re
 from pathlib import Path
 from pprint import pprint
+from itertools import product
 
 import nibabel as nib
 import numpy as np
@@ -127,16 +128,46 @@ def _affine_mm(image):
     return affine
 
 
+def _evaluation_grid(shape, affine):
+    """Keep voxel sizes and center; remove shear with the closest orthogonal axes.
+
+    Bound voxel edges, not just centers, so the full input field of view fits.
+    Reflections are preserved rather than forcing a right-handed orientation.
+    """
+    shape = np.asarray(shape, dtype=np.int64)
+    if shape.shape != (3,) or (shape <= 0).any():
+        raise ValueError("Expected a nonempty 3D input image")
+    axes = affine[:3, :3]
+    spacing = np.linalg.norm(axes, axis=0)
+    directions = axes / spacing
+    if np.allclose(directions.T @ directions, np.eye(3), rtol=0, atol=1e-10):
+        return tuple(int(size) for size in shape), affine.copy(), spacing
+    left, _, right = np.linalg.svd(directions)
+    orthogonal = left @ right
+    center = axes @ ((shape - 1) / 2) + affine[:3, 3]
+    corners = np.asarray(list(product(*[(-0.5, size - 0.5) for size in shape])))
+    world_corners = corners @ axes.T + affine[:3, 3]
+    local_corners = (world_corners - center) @ orthogonal
+    extent = 2 * np.max(np.abs(local_corners), axis=0)
+    # Suppress floating-point noise at integral voxel counts, not real extent.
+    target_shape = np.maximum(1, np.ceil(extent / spacing - 1e-10)).astype(np.int64)
+    target_affine = np.eye(4)
+    target_affine[:3, :3] = orthogonal * spacing
+    target_affine[:3, 3] = center - target_affine[:3, :3] @ ((target_shape - 1) / 2)
+    return tuple(int(size) for size in target_shape), target_affine, spacing
+
+
 def _case_labels(case, prediction_path, num_classes, hd):
     input_image = nib.load(case["input_image"])
     if len(input_image.shape) != 3:
         raise ValueError("Expected a 3D input image")
     input_affine = _affine_mm(input_image)
+    target_shape, target_affine, spacing = _evaluation_grid(input_image.shape, input_affine)
     prediction_image = nib.load(prediction_path)
     reference_image = nib.load(case["reference_label"])
     # Only shape and affine are needed from the target, not its intensity data.
     target = MetaTensor(
-        torch.empty((1, *input_image.shape), dtype=torch.uint8), affine=input_affine
+        torch.empty((1, *target_shape), dtype=torch.uint8), affine=target_affine
     )
     resampler = ResampleToMatch(mode="nearest", padding_mode="zeros")
 
@@ -148,15 +179,6 @@ def _case_labels(case, prediction_path, num_classes, hd):
 
     prediction = aligned_labels(prediction_image)
     reference = aligned_labels(reference_image)
-    # Euclidean spacing assumes orthogonal voxel axes; reject sheared grids.
-    axes = input_affine[:3, :3]
-    spacing = np.linalg.norm(axes, axis=0)
-    if hd is not None:
-        if not np.isfinite(spacing).all() or (spacing <= 0).any():
-            raise ValueError("Invalid voxel spacing")
-        directions = axes / spacing
-        if not np.allclose(directions.T @ directions, np.eye(3), atol=1e-4):
-            raise ValueError("HD requires an orthogonal input image voxel grid")
     return prediction, reference, spacing
 
 
