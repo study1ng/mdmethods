@@ -2,7 +2,9 @@
 
 import csv
 import math
+import re
 from pathlib import Path
+from pprint import pprint
 
 import nibabel as nib
 import numpy as np
@@ -34,10 +36,13 @@ def paired_cases(image_dir: Path, label_dir: Path):
             f"Image/label case IDs differ: missing labels={sorted(images.keys() - labels.keys())}, "
             f"missing images={sorted(labels.keys() - images.keys())}"
         )
-    return {name: labels[name] for name in images}
+    return {
+        name: {"input_image": images[name], "reference_label": labels[name]}
+        for name in images
+    }
 
 
-def _load_labels(image, num_classes):
+def _load_labels(image, num_classes=None):
     values = np.asanyarray(image.dataobj)
     if values.ndim != 3:
         raise ValueError(f"Expected a 3D label map: {image.get_filename()}")
@@ -45,10 +50,12 @@ def _load_labels(image, num_classes):
         not np.isfinite(values).all()
         or not np.equal(values, np.floor(values)).all()
         or values.min() < 0
-        or values.max() >= num_classes
+        or (num_classes is not None and values.max() >= num_classes)
     ):
         raise ValueError(
-            f"Labels must be integers in [0, {num_classes - 1}]: {image.get_filename()}"
+            f"Labels must be nonnegative integers"
+            f"{f' below {num_classes}' if num_classes is not None else ''}: "
+            f"{image.get_filename()}"
         )
     return torch.from_numpy(values.astype(np.int64))[None, None]
 
@@ -58,56 +65,126 @@ def _mean(values):
     return math.fsum(values) / len(values) if values else float("nan")
 
 
-def write_metrics(cases, save_path: Path, *, epoch, num_classes, dice, hd):
-    if num_classes < 2:
+def _prediction_paths(cases, save_path, epoch):
+    if not save_path.is_dir():
+        raise FileNotFoundError(f"Prediction directory does not exist: {save_path}")
+    if epoch is not None:
+        return {
+            name: save_path / f"test_{epoch}_{name}_out.nii.gz" for name in cases
+        }
+    predictions = {}
+    for path in sorted(save_path.glob("test_*_out.nii.gz")):
+        match = re.fullmatch(r"test_\d+_(.+)_out\.nii\.gz", path.name)
+        if match is None or not path.is_file():
+            continue
+        name = match.group(1)
+        if name in predictions:
+            raise ValueError(f"Multiple predictions for case {name}: {predictions[name]}, {path}")
+        predictions[name] = path
+    if predictions.keys() != cases.keys():
+        raise ValueError(
+            f"Prediction case IDs differ: missing predictions={sorted(cases.keys() - predictions.keys())}, "
+            f"unexpected predictions={sorted(predictions.keys() - cases.keys())}"
+        )
+    return predictions
+
+
+def _print_metadata(case, prediction_path):
+    paths = {
+        "input_image": case["input_image"],
+        "prediction_label": prediction_path,
+        "reference_label": case["reference_label"],
+    }
+    for key, path in paths.items():
+        try:
+            image = nib.load(path)
+            qform, qform_code = image.get_qform(coded=True)
+            sform, sform_code = image.get_sform(coded=True)
+            metadata = {
+                "path": str(path), "shape": image.shape, "affine": image.affine,
+                "spacing": image.header.get_zooms(),
+                "units": image.header.get_xyzt_units(),
+                "qform": qform, "qform_code": int(qform_code),
+                "sform": sform, "sform_code": int(sform_code),
+            }
+        except Exception as exc:
+            metadata = {"path": str(path), "error": str(exc)}
+        print(f"{key}: ", end="")
+        pprint(metadata, sort_dicts=False)
+
+
+def _case_labels(case, prediction_path, num_classes, hd):
+    prediction_image = nib.load(prediction_path)
+    reference_image = nib.load(case["reference_label"])
+    if prediction_image.shape != reference_image.shape or not np.allclose(
+        prediction_image.affine, reference_image.affine, rtol=1e-5, atol=1e-4
+    ):
+        raise ValueError("Prediction and label voxel grids differ")
+    prediction = _load_labels(prediction_image, num_classes)
+    reference = _load_labels(reference_image, num_classes)
+    # Euclidean spacing assumes orthogonal voxel axes; reject sheared grids.
+    axes = reference_image.affine[:3, :3]
+    spacing = np.linalg.norm(axes, axis=0)
+    if hd is not None:
+        if not np.isfinite(spacing).all() or (spacing <= 0).any():
+            raise ValueError("Invalid voxel spacing")
+        directions = axes / spacing
+        if not np.allclose(directions.T @ directions, np.eye(3), atol=1e-4):
+            raise ValueError("HD requires an orthogonal voxel grid")
+        units = reference_image.header.get_xyzt_units()[0]
+        if units not in {"unknown", "mm", "meter", "micron"}:
+            raise ValueError(f"Unsupported spatial units: {units}")
+        spacing = spacing * {"unknown": 1, "mm": 1, "meter": 1000, "micron": 0.001}[units]
+    return prediction, reference, spacing
+
+
+def write_metrics(cases, save_path: Path, *, epoch=None, num_classes=None, dice, hd):
+    if num_classes is not None and num_classes < 2:
         raise ValueError("Evaluation requires at least one foreground class")
     metrics_dir = save_path / "metrics"
     if metrics_dir.exists():
         raise FileExistsError(f"Metrics directory already exists: {metrics_dir}")
+    predictions = _prediction_paths(cases, save_path, epoch)
+    organs = set(range(1, num_classes)) if num_classes is not None else set()
+    if num_classes is None:
+        # Discover a dataset-wide vocabulary without a model or plan.
+        # Reload one case at a time below to keep memory bounded.
+        for name, case in cases.items():
+            try:
+                prediction, reference, _ = _case_labels(case, predictions[name], None, hd)
+                for labels in (prediction, reference):
+                    organs.update(int(value) for value in torch.unique(labels).tolist() if value != 0)
+            except Exception:
+                _print_metadata(case, predictions[name])
+                raise
+        if not organs:
+            raise ValueError("Evaluation requires at least one foreground label in prediction or reference")
+    organs = sorted(organs)
     columns = (["dice"] if dice else []) + ([f"hd{hd:g}_mm"] if hd is not None else [])
     dice_metric = DiceMetric(
-        include_background=False, reduction="none", ignore_empty=True,
-        num_classes=num_classes,
+        include_background=True, reduction="none", ignore_empty=True,
     ) if dice else None
     rows = []
-    for name, label_path in cases.items():
-        prediction_path = save_path / f"test_{epoch}_{name}_out.nii.gz"
-        prediction_image = nib.load(prediction_path)
-        reference_image = nib.load(label_path)
-        if prediction_image.shape != reference_image.shape or not np.allclose(
-            prediction_image.affine, reference_image.affine, rtol=1e-5, atol=1e-4
-        ):
-            raise ValueError(f"Prediction and label voxel grids differ for case {name}")
-        prediction = _load_labels(prediction_image, num_classes)
-        reference = _load_labels(reference_image, num_classes)
-        # Euclidean spacing assumes orthogonal voxel axes; reject sheared grids.
-        axes = reference_image.affine[:3, :3]
-        spacing = np.linalg.norm(axes, axis=0)
-        if hd is not None:
-            if not np.isfinite(spacing).all() or (spacing <= 0).any():
-                raise ValueError(f"Invalid voxel spacing for case {name}")
-            directions = axes / spacing
-            if not np.allclose(directions.T @ directions, np.eye(3), atol=1e-4):
-                raise ValueError(f"HD requires an orthogonal voxel grid: {name}")
-            units = reference_image.header.get_xyzt_units()[0]
-            if units not in {"unknown", "mm", "meter", "micron"}:
-                raise ValueError(f"Unsupported spatial units for case {name}: {units}")
-            spacing = spacing * {"unknown": 1, "mm": 1, "meter": 1000, "micron": 0.001}[units]
-        dice_values = dice_metric(prediction, reference)[0] if dice else None
-        if dice:
-            dice_metric.reset()
-        for organ in range(1, num_classes):
-            row = {"case": name, "organ": organ}
-            if dice:
-                row["dice"] = dice_values[organ - 1].item()
-            if hd is not None:
-                # One binary organ at a time avoids a full-volume one-hot allocation.
-                row[columns[-1]] = compute_hausdorff_distance(
-                    prediction == organ, reference == organ,
-                    include_background=True, percentile=hd, directed=False,
-                    spacing=spacing.tolist(),
-                )[0, 0].item()
-            rows.append(row)
+    for name, case in cases.items():
+        try:
+            prediction, reference, spacing = _case_labels(case, predictions[name], num_classes, hd)
+            for organ in organs:
+                row = {"case": name, "organ": organ}
+                # One binary organ at a time also supports noncontiguous label IDs.
+                predicted_organ, reference_organ = prediction == organ, reference == organ
+                if dice:
+                    row["dice"] = dice_metric(predicted_organ, reference_organ)[0, 0].item()
+                    dice_metric.reset()
+                if hd is not None:
+                    row[columns[-1]] = compute_hausdorff_distance(
+                        predicted_organ, reference_organ,
+                        include_background=True, percentile=hd, directed=False,
+                        spacing=spacing.tolist(),
+                    )[0, 0].item()
+                rows.append(row)
+        except Exception:
+            _print_metadata(case, predictions[name])
+            raise
 
     def averaged(group):
         groups = {}

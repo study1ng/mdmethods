@@ -10,6 +10,8 @@ from copy import copy
 import argparse
 from experiments.config import image_key, label_key
 from experiments.munet.evaluation import paired_cases, write_metrics
+from experiments import ArgumentAdaptor
+from experiments.utils import resolved_path
 
 class BottleneckFinetuning(BaseFinetuning):
     def __init__(self):
@@ -111,8 +113,7 @@ class MUNetCustom(MUNetInferencer):
         val_parser = actions.add_parser(
             "val", parents=[super().get_argument_parser()], add_help=False
         )
-        val_parser.add_argument("--dice", action="store_true")
-        val_parser.add_argument("--hd", type=self._hd_percentile, default=None)
+        _add_metric_arguments(val_parser)
         return parser
 
     @staticmethod
@@ -172,5 +173,38 @@ class MUNetCustom(MUNetInferencer):
         return result
 
 
+def _add_metric_arguments(parser):
+    parser.add_argument("--dice", action="store_true")
+    parser.add_argument("--hd", type=MUNetCustom._hd_percentile, default=None)
+
+
+class MUNetMetric(ArgumentAdaptor):
+    def get_argument_parser(self):
+        parser = super().get_argument_parser()
+        parser.add_argument("data", type=resolved_path)
+        parser.add_argument("prediction_path", type=resolved_path)
+        _add_metric_arguments(parser)
+        return parser
+
+    def __call__(self):
+        cases = paired_cases(self.args.data / image_key, self.args.data / label_key)
+        write_metrics(
+            cases, self.args.prediction_path,
+            dice=self.args.dice, hd=self.args.hd,
+        )
+
+
 def custom(args, meta):
-    MUNetCustom(args, meta)()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("action", choices=["val", "metric"])
+    parser.add_argument("-mh", "--module-help", action="help")
+    # Leave subcommand help and arguments to the corresponding adaptor.
+    if args and args[0] in {"val", "metric"}:
+        action, remaining = args[0], args[1:]
+    else:
+        parsed, remaining = parser.parse_known_args(args)
+        action = parsed.action
+    if action == "metric":
+        MUNetMetric(remaining, meta)()
+    else:
+        MUNetCustom(["val", *remaining], meta)()
