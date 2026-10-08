@@ -45,10 +45,22 @@ def _invert(
 
         case "SpatialPad" | "Pad":
             padded = ext["padded"]
-            indices = tuple(
-                slice(pad[0], -pad[1] if pad[1] > 0 else None) for pad in padded
+            channel_before, channel_after = padded[0]
+            if channel_before or channel_after:
+                item = item[
+                    channel_before : item.shape[0] - channel_after
+                ]
+            # Tensor slicing alone leaves the padded affine unchanged. MONAI's
+            # spatial crop restores both voxel data and the origin before resampling.
+            cropper = transforms.SpatialCrop(
+                roi_start=[pad[0] for pad in padded[1:]],
+                roi_end=[
+                    size - pad[1]
+                    for size, pad in zip(item.shape[1:], padded[1:], strict=True)
+                ],
             )
-            return item[indices]
+            with cropper.trace_transform(False):
+                return cropper(item)
 
         case "SpatialResample":
             resampler = SpatialResample(
