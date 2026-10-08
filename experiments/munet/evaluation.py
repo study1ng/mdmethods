@@ -6,6 +6,8 @@ import re
 from pathlib import Path
 from pprint import pprint
 from itertools import product
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from multiprocessing import get_context
 
 import nibabel as nib
 import numpy as np
@@ -13,6 +15,7 @@ import torch
 from monai.metrics import DiceMetric, compute_hausdorff_distance
 from monai.data import MetaTensor
 from monai.transforms import ResampleToMatch
+from tqdm import tqdm
 
 from experiments.config import filekey
 
@@ -212,7 +215,87 @@ def _case_labels(case, prediction_path, num_classes, hd, *, orthogonal_dir=None)
     return prediction, reference, spacing
 
 
-def write_metrics(cases, save_path: Path, *, epoch=None, num_classes=None, dice, hd):
+def _initialize_worker():
+    # Each process handles a whole case; avoid nested PyTorch thread pools.
+    torch.set_num_threads(1)
+
+
+def _collect_organs(name, case, prediction_path):
+    prediction, reference, _ = _case_labels(case, prediction_path, None, None)
+    return {
+        int(value)
+        for labels in (prediction, reference)
+        for value in torch.unique(labels).tolist()
+        if value != 0
+    }
+
+
+def _evaluate_case(name, case, prediction_path, num_classes, organs, dice, hd, orthogonal_dir):
+    prediction, reference, spacing = _case_labels(
+        case, prediction_path, num_classes, hd, orthogonal_dir=orthogonal_dir
+    )
+    dice_metric = DiceMetric(
+        include_background=True, reduction="none", ignore_empty=True,
+    ) if dice else None
+    rows = []
+    for organ in organs:
+        row = {"case": name, "organ": organ}
+        predicted_organ, reference_organ = prediction == organ, reference == organ
+        if dice:
+            row["dice"] = dice_metric(predicted_organ, reference_organ)[0, 0].item()
+            dice_metric.reset()
+        if hd is not None:
+            row[f"hd{hd:g}_mm"] = compute_hausdorff_distance(
+                predicted_organ, reference_organ,
+                include_background=True, percentile=hd, directed=False,
+                spacing=spacing.tolist(),
+            )[0, 0].item()
+        rows.append(row)
+    return rows
+
+
+def _run_cases(function, jobs, workers, description):
+    results = {}
+    if workers == 1:
+        with tqdm(total=len(jobs), desc=description, unit="case") as progress:
+            for job in jobs:
+                try:
+                    results[job[0]] = function(*job)
+                except Exception:
+                    progress.close()
+                    _print_metadata(job[1], job[2])
+                    raise
+                progress.update(1)
+        return results
+    # Spawn is safe after val's CUDA inference; never fork an initialized CUDA process.
+    with ProcessPoolExecutor(
+        max_workers=min(workers, len(jobs)), mp_context=get_context("spawn"),
+        initializer=_initialize_worker,
+    ) as executor:
+        futures = {executor.submit(function, *job): job for job in jobs}
+        with tqdm(total=len(jobs), desc=description, unit="case") as progress:
+            try:
+                for future in as_completed(futures):
+                    job = futures[future]
+                    try:
+                        results[job[0]] = future.result()
+                    except Exception:
+                        progress.close()
+                        _print_metadata(job[1], job[2])
+                        raise
+                    progress.update(1)
+            except BaseException:
+                for pending in futures:
+                    pending.cancel()
+                raise
+    return results
+
+
+def write_metrics(cases, save_path: Path, *, epoch=None, num_classes=None, dice, hd, workers=4):
+    if not isinstance(workers, int) or workers < 1:
+        raise ValueError("workers must be a positive integer")
+    if not cases:
+        raise ValueError("No cases to evaluate")
     if num_classes is not None and num_classes < 2:
         raise ValueError("Evaluation requires at least one foreground class")
     metrics_dir = save_path / "metrics"
@@ -223,47 +306,28 @@ def write_metrics(cases, save_path: Path, *, epoch=None, num_classes=None, dice,
     predictions = _prediction_paths(cases, save_path, epoch)
     organs = set(range(1, num_classes)) if num_classes is not None else set()
     if num_classes is None:
-        # Discover a dataset-wide vocabulary without a model or plan.
-        # Reload one case at a time below to keep memory bounded.
-        for name, case in cases.items():
-            try:
-                prediction, reference, _ = _case_labels(case, predictions[name], None, hd)
-                for labels in (prediction, reference):
-                    organs.update(int(value) for value in torch.unique(labels).tolist() if value != 0)
-            except Exception:
-                _print_metadata(case, predictions[name])
-                raise
+        collected = _run_cases(
+            _collect_organs,
+            [(name, case, predictions[name]) for name, case in cases.items()],
+            workers, "Collecting labels",
+        )
+        for labels in collected.values():
+            organs.update(labels)
         if not organs:
             raise ValueError("Evaluation requires at least one foreground label in prediction or reference")
     organs = sorted(organs)
     columns = (["dice"] if dice else []) + ([f"hd{hd:g}_mm"] if hd is not None else [])
-    dice_metric = DiceMetric(
-        include_background=True, reduction="none", ignore_empty=True,
-    ) if dice else None
-    rows = []
     orthogonal_dir.mkdir(parents=True, exist_ok=False)
-    for name, case in cases.items():
-        try:
-            prediction, reference, spacing = _case_labels(
-                case, predictions[name], num_classes, hd, orthogonal_dir=orthogonal_dir
-            )
-            for organ in organs:
-                row = {"case": name, "organ": organ}
-                # One binary organ at a time also supports noncontiguous label IDs.
-                predicted_organ, reference_organ = prediction == organ, reference == organ
-                if dice:
-                    row["dice"] = dice_metric(predicted_organ, reference_organ)[0, 0].item()
-                    dice_metric.reset()
-                if hd is not None:
-                    row[columns[-1]] = compute_hausdorff_distance(
-                        predicted_organ, reference_organ,
-                        include_background=True, percentile=hd, directed=False,
-                        spacing=spacing.tolist(),
-                    )[0, 0].item()
-                rows.append(row)
-        except Exception:
-            _print_metadata(case, predictions[name])
-            raise
+    evaluated = _run_cases(
+        _evaluate_case,
+        [
+            (name, case, predictions[name], num_classes, organs, dice, hd, orthogonal_dir)
+            for name, case in cases.items()
+        ],
+        workers, "Evaluating and saving",
+    )
+    # Completion order varies across workers; keep CSV ordering deterministic.
+    rows = [row for name in cases for row in evaluated[name]]
 
     def averaged(group):
         groups = {}

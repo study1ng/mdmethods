@@ -248,6 +248,19 @@ CLIの引数構造は変更ありません。既存の `metrics/`・`orthogonal/
 python main.py munet custom metric --module-help
 ```
 
+`custom val` と `custom metric` の評価・直交化・画像保存は症例単位でCPUプロセス並列化します。
+`-w` / `--workers` でプロセス数を指定でき、既定は4、1なら逐次処理です。
+`val` の推論自体は従来の処理を使います。
+`metric` のラベルID収集には `Collecting labels`、両コマンドの評価・保存には
+`Evaluating and saving` のtqdm進捗バーを表示し、完了した症例数を更新します。
+各ワーカーのPyTorch CPUスレッド数は1とし、CSVは親プロセスで症例順に保存します。
+症例ごとのエラーのメタデータは親プロセスが出力します。
+並列数に応じて同時に読み込む画像が増えるので、利用可能なRAMに合わせて指定してください。
+
+```bash
+python main.py munet custom metric <データセット> <予測ディレクトリ> --dice --hd 95 --workers 4
+```
+
 直交化のCPU確認はコンテナ内で手動実行します。合成グリッドで直交性・spacing・中心・
 元画像の領域保持・左右反転を確認します。データセットや出力ファイルは作成しません。
 この確認はMONAIによるラベルのリサンプリング自体は検証しません。

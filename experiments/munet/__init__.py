@@ -169,6 +169,7 @@ class MUNetCustom(MUNetInferencer):
                 epoch=self.trainer.current_epoch,
                 num_classes=num_classes,
                 dice=self.args.dice, hd=self.args.hd,
+                workers=self.args.workers,
             )
         return result
 
@@ -176,6 +177,14 @@ class MUNetCustom(MUNetInferencer):
 def _add_metric_arguments(parser):
     parser.add_argument("--dice", action="store_true")
     parser.add_argument("--hd", type=MUNetCustom._hd_percentile, default=None)
+    parser.add_argument("-w", "--workers", type=_positive_workers, default=4)
+
+
+def _positive_workers(value):
+    workers = int(value)
+    if workers < 1:
+        raise argparse.ArgumentTypeError("--workers must be a positive integer")
+    return workers
 
 
 class MUNetMetric(ArgumentAdaptor):
@@ -191,6 +200,7 @@ class MUNetMetric(ArgumentAdaptor):
         write_metrics(
             cases, self.args.prediction_path,
             dice=self.args.dice, hd=self.args.hd,
+            workers=self.args.workers,
         )
 
 
