@@ -194,9 +194,12 @@ uv run python main.py munet custom val \
 `hd95_mm` 列を出力します。HDのパーセンテージは `0 < p <= 100` で、
 `--hd 100` は最大Hausdorff距離です。両方省略すると推論を行い、CSVはID列だけになります。
 DiceはMONAIの `DiceMetric`、HDはMONAIの `compute_hausdorff_distance` をCPUで使用します。
-HDは両方向の距離のパーセンタイルの最大値で、元画像のvoxel spacingを使ったmm単位です。
-NIfTIの空間単位が未指定の場合はmmとして扱います。画像とラベルのshape・affineが
-一致しない場合や、HD計算対象のグリッドにshearがある場合はエラーになります。
+予測・正解ラベルをMONAIの `ResampleToMatch` で入力画像のshape・affineへ合わせてから評価します。
+補間は最近傍、変換元ラベルの範囲外からサンプリングする値は背景 (0) です。
+変換は評価用のメモリ上だけで行い、保存済み画像は変更しません。
+HDは両方向の距離のパーセンタイルの最大値で、入力画像のvoxel spacingを使ったmm単位です。
+NIfTIの空間単位はmmに換算し、未指定の場合はmmとして扱います。
+入力画像のグリッドにshearがある場合はHDを計算せずエラーになります。
 
 空の正解に対するDiceはMONAIの既定 (`ignore_empty=True`) に従い `nan` です。
 空のマスクに対するHDもMONAIの結果 (`nan` または `inf`) をそのまま記録します。
@@ -219,14 +222,15 @@ python main.py munet custom metric \
 
 指標計算とCSV出力は `custom val` と共通で、予測ディレクトリ直下の `metrics/` に
 `full.csv`・`case.csv`・`organ.csv` を保存します。既存の `metrics/` は上書きしません。
-モデルのクラス数を参照しないため、評価対象は全症例の予測・正解に現れる前景ラベルIDの和集合です。
+モデルのクラス数を参照しないため、評価対象は入力画像のグリッドへ変換した全症例の
+予測・正解に現れる前景ラベルIDの和集合です。
 両方に現れないラベルIDはCSVに含みません。背景 (0) は除外し、疎なラベルIDもそのまま記録します。
 `custom val` は引き続きモデルの全前景クラスを対象とします。
 
 両コマンドとも、症例ごとの読み込み・グリッド確認・指標計算でエラーになった場合は、
 `input_image: {...}`・`prediction_label: {...}`・`reference_label: {...}` の形式で
 パス・shape・affine・spacing・空間単位・qform/sformを `pprint` で出力します。
-画像配列は表示しません。グリッドが不一致の場合は自動補正せず停止します。
+画像配列は表示しません。元のグリッドが異なる場合も入力画像のグリッドへリサンプリングします。
 
 ```bash
 python main.py munet custom metric --module-help

@@ -1,4 +1,4 @@
-"""Evaluate saved inference labels in their original voxel grid on CPU."""
+"""Evaluate saved inference labels on the input image voxel grid on CPU."""
 
 import csv
 import math
@@ -10,6 +10,8 @@ import nibabel as nib
 import numpy as np
 import torch
 from monai.metrics import DiceMetric, compute_hausdorff_distance
+from monai.data import MetaTensor
+from monai.transforms import ResampleToMatch
 
 from experiments.config import filekey
 
@@ -113,28 +115,48 @@ def _print_metadata(case, prediction_path):
         pprint(metadata, sort_dicts=False)
 
 
+def _affine_mm(image):
+    units = image.header.get_xyzt_units()[0]
+    factors = {"unknown": 1, "mm": 1, "meter": 1000, "micron": 0.001}
+    if units not in factors:
+        raise ValueError(f"Unsupported spatial units: {units}")
+    affine = image.affine.copy()
+    affine[:3, :] *= factors[units]
+    if not np.isfinite(affine).all() or np.linalg.matrix_rank(affine[:3, :3]) != 3:
+        raise ValueError(f"Invalid affine: {image.get_filename()}")
+    return affine
+
+
 def _case_labels(case, prediction_path, num_classes, hd):
+    input_image = nib.load(case["input_image"])
+    if len(input_image.shape) != 3:
+        raise ValueError("Expected a 3D input image")
+    input_affine = _affine_mm(input_image)
     prediction_image = nib.load(prediction_path)
     reference_image = nib.load(case["reference_label"])
-    if prediction_image.shape != reference_image.shape or not np.allclose(
-        prediction_image.affine, reference_image.affine, rtol=1e-5, atol=1e-4
-    ):
-        raise ValueError("Prediction and label voxel grids differ")
-    prediction = _load_labels(prediction_image, num_classes)
-    reference = _load_labels(reference_image, num_classes)
+    # Only shape and affine are needed from the target, not its intensity data.
+    target = MetaTensor(
+        torch.empty((1, *input_image.shape), dtype=torch.uint8), affine=input_affine
+    )
+    resampler = ResampleToMatch(mode="nearest", padding_mode="zeros")
+
+    def aligned_labels(image):
+        labels = _load_labels(image, num_classes)
+        source = MetaTensor(labels[0], affine=_affine_mm(image))
+        aligned = resampler(source, target)
+        return aligned.as_tensor().to(torch.int64)[None]
+
+    prediction = aligned_labels(prediction_image)
+    reference = aligned_labels(reference_image)
     # Euclidean spacing assumes orthogonal voxel axes; reject sheared grids.
-    axes = reference_image.affine[:3, :3]
+    axes = input_affine[:3, :3]
     spacing = np.linalg.norm(axes, axis=0)
     if hd is not None:
         if not np.isfinite(spacing).all() or (spacing <= 0).any():
             raise ValueError("Invalid voxel spacing")
         directions = axes / spacing
         if not np.allclose(directions.T @ directions, np.eye(3), atol=1e-4):
-            raise ValueError("HD requires an orthogonal voxel grid")
-        units = reference_image.header.get_xyzt_units()[0]
-        if units not in {"unknown", "mm", "meter", "micron"}:
-            raise ValueError(f"Unsupported spatial units: {units}")
-        spacing = spacing * {"unknown": 1, "mm": 1, "meter": 1000, "micron": 0.001}[units]
+            raise ValueError("HD requires an orthogonal input image voxel grid")
     return prediction, reference, spacing
 
 
