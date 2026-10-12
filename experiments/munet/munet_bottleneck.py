@@ -171,7 +171,20 @@ class MUNetBottleneck(L.LightningModule):
             skips = [*skips_map[patch_position], last]
             yield (skips, patch_image, patch_label, patch_position)
 
-    def forward(self, lasts: tuple[PatchFeature, ...]) -> tuple[PatchFeature, ...]:
+    def forward(
+        self,
+        lasts: tuple[PatchFeature, ...],
+        *,
+        no_mixing: bool = False,
+        no_ppe: bool = False,
+    ) -> tuple[PatchFeature, ...]:
+        if no_mixing:
+            # Separate calls prevent Mamba state and convolution from crossing
+            # patch boundaries. Preserve positions for skips and stitching.
+            return tuple(
+                self((patch,), no_ppe=no_ppe)[0] for patch in lasts
+            )
+
         flats = []
         blended_list = []
 
@@ -185,7 +198,7 @@ class MUNetBottleneck(L.LightningModule):
 
             pos_encode = self.add_pos_enc(
                 patch.feature.shape,
-                patch.pos,
+                (0, 0, 0) if no_ppe else patch.pos,
             ).to(dtype=self.dtype)
 
             blended = self.pos_blend(

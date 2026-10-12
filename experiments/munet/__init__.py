@@ -51,6 +51,18 @@ def train(args, parsed):
 
 
 class MUNetInferencer(PlainSegInferencer):
+    def get_argument_parser(self):
+        parser = super().get_argument_parser()
+        parser.add_argument(
+            "--no-mixing", action="store_true",
+            help="Process each patch independently through the bottleneck; keep PPE coordinates.",
+        )
+        parser.add_argument(
+            "--no-ppe", action="store_true",
+            help="Compute PPE at (0, 0, 0) for every patch; keep local positional encoding.",
+        )
+        return parser
+
     def _build_module(self):
         # Validate metadata before constructing the model or starting the trainer.
         # Plan and builder objects require loading the full, trusted checkpoint.
@@ -91,7 +103,7 @@ class MUNetInferencer(PlainSegInferencer):
         # Release checkpoint tensors before Lightning reads them for restoration.
         del state, hparams, saved_plan, checkpoint
         try:
-            return Model.load_from_checkpoint(
+            module = Model.load_from_checkpoint(
                 self.ckpt_path, map_location="cpu", strict=True,
                 weights_only=False, plan=self.plan,
             )
@@ -101,6 +113,9 @@ class MUNetInferencer(PlainSegInferencer):
                 "builder. Make the original pretrained checkpoints available at "
                 f"their recorded paths. Missing file: {exc.filename or exc}"
             ) from exc
+        module.no_mixing = self.args.no_mixing
+        module.no_ppe = self.args.no_ppe
+        return module
 
 
 def inference(args, meta):

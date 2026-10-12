@@ -83,6 +83,9 @@ class MUNetTrainingModule(UNetTrainingModule):
         )
         self.automatic_optimization = False
         self.cache_skip_level = 2
+        # Runtime inference switches, independent of checkpoint hyperparameters.
+        self.no_mixing = False
+        self.no_ppe = False
 
     def split_to_patch(
         self, image: torch.Tensor, label: torch.Tensor | None = None
@@ -151,7 +154,9 @@ class MUNetTrainingModule(UNetTrainingModule):
                 for feature, pos in zip(features, patch_positions, strict=True)
             )
             return tuple(
-                patch.feature for patch in self.bottleneck(patch_features)
+                patch.feature for patch in self.bottleneck(
+                    patch_features, no_mixing=self.no_mixing, no_ppe=self.no_ppe
+                )
             )
 
         bottleneck_tensors = checkpoint(
