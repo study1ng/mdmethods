@@ -331,6 +331,56 @@ print('grid checks passed')
 PY
 ```
 
+## TotalSegmentator (`ttsg`) の推論と評価
+
+TotalSegmentatorはコンテナ内で手動導入してください。`pyproject.toml` の依存関係への
+`TotalSegmentator` の追加と、ロックファイル・環境の更新はユーザーが行います。
+バージョンは既存のPyTorch・nnU-Net関連依存との互換性を確認して選択してください。
+初回推論時には学習済み重みをダウンロードする場合があります。
+
+```bash
+uv run python main.py ttsg inference <画像ディレクトリ> <出力ルート> \
+  --devices 0 --task total --roi_subset liver spleen
+
+uv run python main.py ttsg custom val <データセット> <出力ルート> \
+  --devices 0 --task total --roi_subset liver spleen \
+  --dice --hd 95 --workers 4
+```
+
+`inference` は入力ディレクトリ直下の `.nii.gz` を処理します。
+`custom val` はデータセット直下の `image/` と `label/` を使います。
+症例IDの取得・重複検出は既存の規約に従います。
+プランJSONと `--ckpt` は不要です。`--devices` はGPU番号を1つ指定します。
+CPUは `--cpu`、低解像度モデルは `--fast` で指定します。
+`--task` の既定値は `total` で、利用可能なタスクは導入したTotalSegmentatorに依存します。
+`--roi_subset`（別名 `--roi-subset`）は `total`・`total_mr` に対応し、省略時は全臓器を対象にします。
+推論・評価とも選択した臓器が対象で、症例に存在しない臓器も評価対象に含めます。
+
+正解IDは既定で選択タスクのTotalSegmentator IDと解釈します。
+異なるID体系では `--label-map <JSONファイル>` を追加してください。
+例えば `--roi_subset liver spleen` に対して `{"liver": 1, "spleen": 2}` とします。
+JSONは選択した全臓器の名前と、重複しない正整数の正解IDを指定します。
+選択していない臓器名は含めません。
+
+出力先は `<出力ルート>/ttsg/<日時>/` で、既存ディレクトリには書き込みません。
+予測は `test_0_<症例ID>_out.nii.gz` に保存します。
+**保存IDは、タスクの元ID順に選択臓器を1から連番にしたものです。**
+元のTotalSegmentator ID・正解ID・保存IDの対応は `labels.json` に記録します。
+CSVの `organ` 列と `orthogonal/` のラベルも、この保存IDを使います。
+選択外のラベルは背景0です。元データは変更しません。
+`val` は変換した正解を `reference/` に保存し、既存の評価処理で
+`metrics/` と `orthogonal/` を出力します。
+指標・空ラベルの扱い・CPU並列化はMUNet評価と共通です。
+途中で失敗すると部分的な出力が残る場合があります。
+
+構文とCLIヘルプはコンテナ内で手動確認してください。以下は推論を開始しません。
+
+```bash
+uv run python -m py_compile experiments/ttsg/__init__.py
+uv run python main.py ttsg inference --module-help
+uv run python main.py ttsg custom val --module-help
+```
+
 ## データと生成物
 
 `data/`はGit管理外です。データセット、医用画像、前処理結果、チェックポイント、推論結果、ログ、SQLiteデータベース、生成レポートなどをコミットしないでください。
