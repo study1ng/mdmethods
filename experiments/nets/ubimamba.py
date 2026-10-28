@@ -34,6 +34,7 @@ class BiMambaBlock(Block):
             [Mamba(input_channel, d_state, d_conv, expand) for _ in range(2)]
         )
         self.out_proj = nn.Linear(input_channel * 2, output_channel)
+        self.diagnostics_callback = None
 
     def forward_patch_token(self, x):
         B, d_model = x.shape[:2]
@@ -45,11 +46,22 @@ class BiMambaBlock(Block):
         # Bi-directional scan
         x_flat = x.reshape(B, d_model, n_tokens).transpose(-1, -2)
         x_norm = self.norm(x_flat)
+        observe = self.diagnostics_callback
+        if observe is not None:
+            observe("after_layer_norm", x_norm)
         x_flip = x_norm.flip([1]).contiguous()
         x_mamba = self.mambas[0](x_norm)
         x_flip_mamba = self.mambas[1](x_flip).flip([1]).contiguous()
+        if observe is not None:
+            observe("forward_mamba", x_mamba)
+            # Align reverse-scan output with the original token coordinates.
+            observe("backward_mamba", x_flip_mamba)
         x_mamba = torch.cat([x_mamba, x_flip_mamba], dim=-1)
         x_mamba = self.out_proj(x_mamba)
+        if observe is not None:
+            observe("after_out_proj", x_mamba)
+            non_bias = x_mamba if self.out_proj.bias is None else x_mamba - self.out_proj.bias
+            observe("out_proj_non_bias", non_bias)
         out = x_mamba.transpose(-1, -2).reshape(B, self.output_channel, *img_dims)
         return out
 

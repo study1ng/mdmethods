@@ -215,6 +215,7 @@ class MUNetBottleneck(L.LightningModule):
                 flat,
             )
             if observe is not None:
+                observe("encoder_features", flat, patch.pos, None)
                 observe("positional_encoding", pos_encode, patch.pos, None)
                 observe("after_positional_encoding", blended, patch.pos, None)
 
@@ -241,7 +242,23 @@ class MUNetBottleneck(L.LightningModule):
             d=d,
         )
 
-        bottleneck: torch.Tensor = self.bottleneck(blended.contiguous())
+        def observe_tokens(stage, tokens):
+            # BiMamba flattens P,H,W,D in this order. Restore patch boundaries
+            # after reversing the backward scan, before comparing coordinates.
+            spatial = rearrange(
+                tokens, "b (p h w d) c -> b c p h w d",
+                p=len(lasts), h=h, w=w, d=d,
+            )
+            for index, patch in enumerate(lasts):
+                observe(stage, spatial[:, :, index], patch.pos, None)
+
+        previous_observer = self.bottleneck.diagnostics_callback
+        if observe is not None:
+            self.bottleneck.diagnostics_callback = observe_tokens
+        try:
+            bottleneck: torch.Tensor = self.bottleneck(blended.contiguous())
+        finally:
+            self.bottleneck.diagnostics_callback = previous_observer
         if observe is not None:
             for index, patch in enumerate(lasts):
                 observe("mamba_output", bottleneck[:, :, index], patch.pos, None)

@@ -8,6 +8,9 @@ from torch.utils.checkpoint import checkpoint
 from monai.losses import DiceCELoss
 from typing import Any, Generator
 import json
+import math
+import platform
+from importlib.metadata import PackageNotFoundError, version
 from experiments.config import image_key, label_key
 from experiments.munet.munet_bottleneck import (
     MUNetBottleneck,
@@ -324,25 +327,178 @@ class MUNetTrainingModule(UNetTrainingModule):
         self.metric.reset()
 
     def _write_diagnostics(self, record):
-        self.diagnostics_stream.write(json.dumps(record, ensure_ascii=False) + "\n")
+        def finite_json(value):
+            if isinstance(value, float) and not math.isfinite(value):
+                return None
+            if isinstance(value, dict):
+                return {key: finite_json(item) for key, item in value.items()}
+            if isinstance(value, (list, tuple)):
+                return [finite_json(item) for item in value]
+            return value
+
+        self.diagnostics_stream.write(json.dumps(finite_json(record), ensure_ascii=False, allow_nan=False) + "\n")
         self.diagnostics_stream.flush()
+
+    @staticmethod
+    def _diagnostic_stats(value):
+        """Summarize finite values; spatial variation is measured per channel."""
+        finite = torch.isfinite(value)
+        count = finite.sum().item()
+        record = {
+            "elements": value.numel(), "finite": count == value.numel(),
+            "nan_count": torch.isnan(value).sum().item(),
+            "inf_count": torch.isinf(value).sum().item(),
+            "min": None, "max": None, "mean": None, "mean_abs": None,
+        }
+        if count:
+            valid = value if count == value.numel() else value[finite]
+            record.update({
+                "min": valid.min().item(), "max": valid.max().item(),
+                "mean": valid.mean(dtype=torch.float64).item(),
+                "mean_abs": valid.abs().mean(dtype=torch.float64).item(),
+                "std": valid.std(correction=0).item(),
+                "zero_fraction": (valid == 0).sum().item() / count,
+            })
+        if value.ndim >= 3 and record["finite"] and value.numel():
+            flat = value.reshape(value.shape[0], value.shape[1], -1)
+            std = flat.std(dim=-1, correction=0)
+            record["spatial_std_per_channel"] = {
+                "min": std.min().item(), "mean": std.mean().item(),
+                "max": std.max().item(), "spatial_elements": flat.shape[-1],
+            }
+        return record
+
+    @staticmethod
+    def _diagnostic_difference(current, baseline):
+        """Use chunked float64 comparisons without retaining difference volumes."""
+        if current.shape != baseline.shape:
+            return {"status": "shape_mismatch", "reference_shape": list(baseline.shape)}
+        if not current.numel():
+            return {"status": "empty_tensor"}
+        maximum = total = reference_abs = 0.0
+        tolerances = (0.0, 1e-8, 1e-6, 1e-4)
+        matches = [0] * len(tolerances)
+        equal = True
+        left, right = current.reshape(-1), baseline.reshape(-1)
+        for start in range(0, left.numel(), 262144):
+            a = left[start : start + 262144].to(torch.float64)
+            b = right[start : start + 262144].to(torch.float64)
+            if not (torch.isfinite(a).all().item() and torch.isfinite(b).all().item()):
+                return {"status": "nonfinite_tensor"}
+            delta = (a - b).abs()
+            maximum = max(maximum, delta.max().item())
+            total += delta.sum().item()
+            reference_abs += b.abs().sum().item()
+            equal = equal and torch.equal(a, b)
+            for index, atol in enumerate(tolerances):
+                matches[index] += (delta <= atol + 1e-5 * b.abs()).sum().item()
+        return {
+            "status": "ok", "max_abs_diff": maximum,
+            "mean_abs_diff": total / current.numel(), "exact_equal": equal,
+            "relative_mean_abs_diff": total / reference_abs if reference_abs else None,
+            "relative_status": "ok" if reference_abs else "zero_reference",
+            "reference_mean_abs": reference_abs / current.numel(),
+            "tolerance_rtol": 1e-5,
+            "matching_fraction_by_atol": {
+                f"{atol:g}": matches[index] / current.numel()
+                for index, atol in enumerate(tolerances)
+            },
+        }
+
+    def _start_diagnostic_session(self):
+        if getattr(self, "_diagnostics_session_stream", None) is self.diagnostics_stream:
+            return
+        self._diagnostics_session_stream = self.diagnostics_stream
+        self._diagnostics_case_references = {}
+        packages = {}
+        for package in ("torch", "lightning", "monai", "mamba-ssm", "causal-conv1d"):
+            try:
+                packages[package] = version(package)
+            except PackageNotFoundError:
+                packages[package] = "not_found"
+        self._write_diagnostics({
+            "event": "diagnostic_environment", "schema_version": 2,
+            "python": platform.python_version(), "packages": packages,
+            "cuda_version": torch.version.cuda,
+            "device": str(self.device),
+            "gpu": torch.cuda.get_device_name(self.device) if self.device.type == "cuda" else None,
+            "matmul_precision": torch.get_float32_matmul_precision(),
+            "cudnn_benchmark": torch.backends.cudnn.benchmark,
+            "deterministic_algorithms": torch.are_deterministic_algorithms_enabled(),
+            "training": self.training, "gamma": self.bottleneck.gamma.detach().cpu().tolist(),
+            "comparison_layout": "B,C,spatial (flattened for elementwise comparison)",
+            "alignment": "local patch coordinates without registration; batch items compared by index",
+            "within_case_reference": "first patch in each condition",
+            "cross_case_reference": "first patch of the first observed case, same condition",
+            "condition_reference": "normal, first patch only for intermediate features",
+            "decoder_comparison": "whole stitched logits only; per-patch statistics retained",
+            "nonfinite_json_values": "null; inspect finite/nan_count/inf_count/status",
+            "scope": "observational; does not prove causal dependence or independence",
+            "bimamba": {
+                "class": type(self.bottleneck.bottleneck).__qualname__,
+                "layer_norm_eps": self.bottleneck.bottleneck.norm.eps,
+                "out_proj_has_bias": self.bottleneck.bottleneck.out_proj.bias is not None,
+                "inference_params": None,
+                "directions": [{
+                    "class": f"{type(module).__module__}.{type(module).__qualname__}",
+                    "use_fast_path": getattr(module, "use_fast_path", None),
+                    "d_state": getattr(module, "d_state", None),
+                    "d_conv": getattr(module, "d_conv", None),
+                    "training": module.training,
+                } for module in self.bottleneck.bottleneck.mambas],
+            },
+        })
+        for name, parameter in self.bottleneck.named_parameters():
+            self._write_diagnostics({
+                "event": "parameter_stats", "parameter": name,
+                "shape": list(parameter.shape), "dtype": str(parameter.dtype),
+                "requires_grad": parameter.requires_grad,
+                **self._diagnostic_stats(parameter.detach().to(device="cpu", dtype=torch.float32)),
+            })
+
+    def on_test_end(self):
+        # Release first-case reference tensors even when the module stays alive.
+        self._diagnostics_case_references = {}
+        self._diagnostics_session_stream = None
 
     def _diagnostic_prediction(self, batch, patches, output_size, batch_index):
         """Compare four settings and intermediate features against normal inference.
 
-        --diagnostics also emits per-patch diagnostic_stage and bottleneck_call
-        records. Normal-condition intermediate tensors are retained on CPU only
-        for this case, including patch logits; this increases diagnostic RAM use.
+        --diagnostics PATH writes UTF-8 JSON lines as each stage completes.
+        patch_comparison compares all patches to the condition's first patch;
+        cross_case_comparison compares each case's first patch to the first case.
+        condition_comparison uses the normal condition's first patch. References
+        contain one patch per stage, never complete decoder output volumes.
+        Relative errors use mean absolute reference magnitude, with no epsilon.
+        Tolerance fractions use abs(a-b) <= atol + 1e-5*abs(reference).
+        Single-patch cases, shape mismatches, zero references and NaN/Inf are
+        explicitly marked. No raw tensors are written. Requires one device;
+        CPU memory and runtime increase. Whole-logit comparisons are unchanged.
         """
+        self._start_diagnostic_session()
+        if not patches:
+            self._write_diagnostics({"event": "case_skipped", "batch_index": batch_index, "reason": "no_patches"})
+            raise ValueError("Diagnostics cannot predict an image with no patches")
         selected_flags = (self.no_ppe, self.no_mixing)
         selected_pred = None
         reference = None
         reference_pred = None
         comparisons = {}
-        stage_references = {}
+        normal_first = {}
+        condition_first = {}
+        first_position = tuple(patches[0][2])
         previous_observer = self.bottleneck.diagnostics_callback
+        progress = {"stage": "case_start", "position": None}
+        self._write_diagnostics({
+            "event": "case_start", "batch_index": batch_index,
+            "case": str(batch.get("name", "unknown")),
+            "source": str(getattr(batch[image_key], "meta", {}).get("filename_or_obj", "unknown")),
+            "image_shape": list(batch[image_key].shape),
+            "selected_flags": {"no_ppe": selected_flags[0], "no_mixing": selected_flags[1]},
+        })
 
         def observe(stage, value, position, flags):
+            progress.update({"stage": stage, "position": None if position is None else list(position)})
             record = {
                 "event": "bottleneck_call" if value is None else "diagnostic_stage",
                 "batch_index": batch_index, "case": str(batch.get("name", "unknown")),
@@ -351,23 +507,47 @@ class MUNetTrainingModule(UNetTrainingModule):
             if value is None:
                 record["received_flags"] = flags
             else:
-                # Clone before Mamba output is scaled/modified in place below.
-                current = value.detach().to(device="cpu", dtype=torch.float32).clone()
-                key = (stage, tuple(position))
+                # Canonical channel-first layout also aligns flattened PE stages
+                # with the spatial BiMamba stages. CPU copy precedes in-place ops.
+                comparison_dtype = torch.float64 if value.dtype == torch.float64 else torch.float32
+                current = value.detach().to(device="cpu", dtype=comparison_dtype)
+                if stage in {"encoder_features", "positional_encoding", "after_positional_encoding"}:
+                    current = current.transpose(1, 2).contiguous()
                 record.update({
                     "patch_position": list(position), "shape": list(current.shape),
                     "dtype": str(value.dtype), "device": str(value.device),
-                    "finite": torch.isfinite(current).all().item(),
-                    "min": current.min().item(), "max": current.max().item(),
+                    "comparison_dtype": str(current.dtype),
+                    **self._diagnostic_stats(current),
                 })
-                if name == "normal":
-                    stage_references[key] = current
-                    record["max_abs_diff_vs_normal"] = 0.0
+                if stage != "decoder_logits":
+                    if stage not in condition_first:
+                        snapshot = current.clone()
+                        condition_first[stage] = snapshot
+                        if name == "normal":
+                            normal_first[stage] = snapshot
+                        record["patch_comparison"] = {
+                            "status": "reference_only" if len(patches) > 1 else "single_patch",
+                            "reference_position": list(first_position),
+                        }
+                        record["condition_comparison"] = self._diagnostic_difference(current, normal_first[stage])
+                        key = (name, stage)
+                        context = {"batch_index": batch_index, "case": str(batch.get("name", "unknown")), "position": list(position)}
+                        if key not in self._diagnostics_case_references:
+                            self._diagnostics_case_references[key] = (snapshot, context)
+                            record["cross_case_comparison"] = {"status": "first_case_reference", "reference": context}
+                        else:
+                            baseline, context = self._diagnostics_case_references[key]
+                            record["cross_case_comparison"] = {
+                                **self._diagnostic_difference(current, baseline), "reference": context,
+                            }
+                    else:
+                        record["patch_comparison"] = {
+                            **self._diagnostic_difference(current, condition_first[stage]),
+                            "reference_position": list(first_position),
+                        }
+                        record["condition_comparison"] = {"status": "first_patch_only"}
                 else:
-                    baseline = stage_references[key]
-                    if current.shape != baseline.shape:
-                        raise ValueError(f"Diagnostic stage shape differs: {key}")
-                    record["max_abs_diff_vs_normal"] = (current - baseline).abs().max().item()
+                    record["patch_comparison"] = {"status": "not_retained_decoder_logits"}
             self._write_diagnostics(record)
 
         def observe_decoder(patch_index, patch_label, out):
@@ -377,10 +557,20 @@ class MUNetTrainingModule(UNetTrainingModule):
             ("normal", False, False), ("no_ppe", True, False),
             ("no_mixing", False, True), ("no_ppe_no_mixing", True, True),
         )
+        name = "not_started"
         try:
             self.bottleneck.diagnostics_callback = observe
             for name, no_ppe, no_mixing in conditions:
+                condition_first = {}
+                progress.update({"stage": "condition_start", "position": None})
                 self.no_ppe, self.no_mixing = no_ppe, no_mixing
+                self._write_diagnostics({
+                    "event": "condition_start", "batch_index": batch_index,
+                    "case": str(batch.get("name", "unknown")), "condition": name,
+                    "no_ppe": no_ppe, "no_mixing": no_mixing, "patch_count": len(patches),
+                    "patch_positions": [list(position) for _, _, position in patches],
+                    "single_patch": len(patches) == 1,
+                })
                 results = self._collect_patch_outputs(patches, observe_decoder)
                 logits = stitch_logits(results, BlendMode.GAUSSIAN, output_size=output_size)
                 del results
@@ -421,6 +611,15 @@ class MUNetTrainingModule(UNetTrainingModule):
                     totals["changed_fraction"] = totals["changed_voxels"] / totals["voxels"]
                     del difference
                 del logits, prediction
+                self._write_diagnostics({"event": "condition_end", "batch_index": batch_index, "condition": name})
+        except BaseException as exc:
+            self._write_diagnostics({
+                "event": "diagnostic_interrupted", "batch_index": batch_index,
+                "condition": name, "last_observed": progress,
+                "exception_type": type(exc).__qualname__, "message": str(exc),
+            })
+            self._diagnostics_case_references = {}
+            raise
         finally:
             self.no_ppe, self.no_mixing = selected_flags
             self.bottleneck.diagnostics_callback = previous_observer
