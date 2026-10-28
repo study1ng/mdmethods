@@ -328,22 +328,67 @@ class MUNetTrainingModule(UNetTrainingModule):
         self.diagnostics_stream.flush()
 
     def _diagnostic_prediction(self, batch, patches, output_size, batch_index):
-        """Compare four inference settings, retaining only two CPU logit volumes."""
+        """Compare four settings and intermediate features against normal inference.
+
+        --diagnostics also emits per-patch diagnostic_stage and bottleneck_call
+        records. Normal-condition intermediate tensors are retained on CPU only
+        for this case, including patch logits; this increases diagnostic RAM use.
+        """
         selected_flags = (self.no_ppe, self.no_mixing)
         selected_pred = None
         reference = None
         reference_pred = None
         comparisons = {}
+        stage_references = {}
+        previous_observer = self.bottleneck.diagnostics_callback
+
+        def observe(stage, value, position, flags):
+            record = {
+                "event": "bottleneck_call" if value is None else "diagnostic_stage",
+                "batch_index": batch_index, "case": str(batch.get("name", "unknown")),
+                "condition": name, "stage": stage,
+            }
+            if value is None:
+                record["received_flags"] = flags
+            else:
+                # Clone before Mamba output is scaled/modified in place below.
+                current = value.detach().to(device="cpu", dtype=torch.float32).clone()
+                key = (stage, tuple(position))
+                record.update({
+                    "patch_position": list(position), "shape": list(current.shape),
+                    "dtype": str(value.dtype), "device": str(value.device),
+                    "finite": torch.isfinite(current).all().item(),
+                    "min": current.min().item(), "max": current.max().item(),
+                })
+                if name == "normal":
+                    stage_references[key] = current
+                    record["max_abs_diff_vs_normal"] = 0.0
+                else:
+                    baseline = stage_references[key]
+                    if current.shape != baseline.shape:
+                        raise ValueError(f"Diagnostic stage shape differs: {key}")
+                    record["max_abs_diff_vs_normal"] = (current - baseline).abs().max().item()
+            self._write_diagnostics(record)
+
+        def observe_decoder(patch_index, patch_label, out):
+            observe("decoder_logits", out, patches[patch_index][2], None)
+
         conditions = (
             ("normal", False, False), ("no_ppe", True, False),
             ("no_mixing", False, True), ("no_ppe_no_mixing", True, True),
         )
         try:
+            self.bottleneck.diagnostics_callback = observe
             for name, no_ppe, no_mixing in conditions:
                 self.no_ppe, self.no_mixing = no_ppe, no_mixing
-                results = self._collect_patch_outputs(patches)
+                results = self._collect_patch_outputs(patches, observe_decoder)
                 logits = stitch_logits(results, BlendMode.GAUSSIAN, output_size=output_size)
                 del results
+                self._write_diagnostics({
+                    "event": "stitched_logits", "batch_index": batch_index,
+                    "condition": name, "min": logits.min().item(),
+                    "max": logits.max().item(), "dtype": str(logits.dtype),
+                })
                 if not torch.isfinite(logits).all().item():
                     raise ValueError(f"Nonfinite diagnostic logits: batch={batch_index}, condition={name}")
                 prediction = logits.argmax(1, keepdim=True)
@@ -378,6 +423,7 @@ class MUNetTrainingModule(UNetTrainingModule):
                 del logits, prediction
         finally:
             self.no_ppe, self.no_mixing = selected_flags
+            self.bottleneck.diagnostics_callback = previous_observer
         metadata = getattr(batch[image_key], "meta", {})
         self._write_diagnostics({
             "event": "case", "batch_index": batch_index,

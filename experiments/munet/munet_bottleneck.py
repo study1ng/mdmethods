@@ -136,6 +136,8 @@ class MUNetBottleneck(L.LightningModule):
         self.ppe = PointPositionalEncoding3D(global_pe_channel)
         self.pe = PositionalEncoding3D(channel - global_pe_channel)
         self.gamma = torch.nn.Parameter(torch.full((1,), gamma))
+        # Runtime-only observer; no tensors or parameters are added to checkpoints.
+        self.diagnostics_callback = None
 
     def add_pos_enc(self, patch_shape, patch_pos) -> torch.Tensor:
         """
@@ -178,6 +180,13 @@ class MUNetBottleneck(L.LightningModule):
         no_mixing: bool = False,
         no_ppe: bool = False,
     ) -> tuple[PatchFeature, ...]:
+        observe = self.diagnostics_callback
+        if observe is not None:
+            observe("bottleneck_call", None, None, {
+                "no_ppe": no_ppe, "no_mixing": no_mixing,
+                "patch_count": len(lasts),
+                "positions": [list(patch.pos) for patch in lasts],
+            })
         if no_mixing:
             # Separate calls prevent Mamba state and convolution from crossing
             # patch boundaries. Preserve positions for skips and stitching.
@@ -205,6 +214,9 @@ class MUNetBottleneck(L.LightningModule):
                 pos_encode,
                 flat,
             )
+            if observe is not None:
+                observe("positional_encoding", pos_encode, patch.pos, None)
+                observe("after_positional_encoding", blended, patch.pos, None)
 
             flats.append(flat)
             blended_list.append(blended)
@@ -230,9 +242,15 @@ class MUNetBottleneck(L.LightningModule):
         )
 
         bottleneck: torch.Tensor = self.bottleneck(blended.contiguous())
+        if observe is not None:
+            for index, patch in enumerate(lasts):
+                observe("mamba_output", bottleneck[:, :, index], patch.pos, None)
         # print("bottleneck max: ", bottleneck.abs().max())
         bottleneck *= self.gamma
         bottleneck += residual
+        if observe is not None:
+            for index, patch in enumerate(lasts):
+                observe("after_residual", bottleneck[:, :, index], patch.pos, None)
 
         reshaped = rearrange(
             bottleneck,
