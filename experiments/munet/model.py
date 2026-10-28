@@ -7,6 +7,7 @@ import torch.nn.functional as F
 from torch.utils.checkpoint import checkpoint
 from monai.losses import DiceCELoss
 from typing import Any, Generator
+import json
 from experiments.config import image_key, label_key
 from experiments.munet.munet_bottleneck import (
     MUNetBottleneck,
@@ -86,6 +87,7 @@ class MUNetTrainingModule(UNetTrainingModule):
         # Runtime inference switches, independent of checkpoint hyperparameters.
         self.no_mixing = False
         self.no_ppe = False
+        self.diagnostics_stream = None
 
     def split_to_patch(
         self, image: torch.Tensor, label: torch.Tensor | None = None
@@ -321,11 +323,82 @@ class MUNetTrainingModule(UNetTrainingModule):
         )
         self.metric.reset()
 
-    def test_step(self, batch, _):
+    def _write_diagnostics(self, record):
+        self.diagnostics_stream.write(json.dumps(record, ensure_ascii=False) + "\n")
+        self.diagnostics_stream.flush()
+
+    def _diagnostic_prediction(self, batch, patches, output_size, batch_index):
+        """Compare four inference settings, retaining only two CPU logit volumes."""
+        selected_flags = (self.no_ppe, self.no_mixing)
+        selected_pred = None
+        reference = None
+        reference_pred = None
+        comparisons = {}
+        conditions = (
+            ("normal", False, False), ("no_ppe", True, False),
+            ("no_mixing", False, True), ("no_ppe_no_mixing", True, True),
+        )
+        try:
+            for name, no_ppe, no_mixing in conditions:
+                self.no_ppe, self.no_mixing = no_ppe, no_mixing
+                results = self._collect_patch_outputs(patches)
+                logits = stitch_logits(results, BlendMode.GAUSSIAN, output_size=output_size)
+                del results
+                if not torch.isfinite(logits).all().item():
+                    raise ValueError(f"Nonfinite diagnostic logits: batch={batch_index}, condition={name}")
+                prediction = logits.argmax(1, keepdim=True)
+                if (no_ppe, no_mixing) == selected_flags:
+                    selected_pred = prediction
+                if reference is None:
+                    reference, reference_pred = logits, prediction
+                else:
+                    difference = (logits - reference).abs()
+                    changed = (prediction != reference_pred).sum().item()
+                    count = prediction.numel()
+                    maximum = difference.max().item()
+                    total_difference = difference.sum(dtype=torch.float64).item()
+                    comparisons[name] = {
+                        "logits_max_abs_diff": maximum,
+                        "logits_mean_abs_diff": total_difference / difference.numel(),
+                        "changed_voxels": changed, "voxels": count,
+                        "changed_fraction": changed / count,
+                    }
+                    totals = self.diagnostics_totals.setdefault(name, {
+                        "logits_max_abs_diff": 0.0, "logits_abs_diff_sum": 0.0,
+                        "logits_elements": 0, "changed_voxels": 0, "voxels": 0,
+                    })
+                    totals["logits_max_abs_diff"] = max(totals["logits_max_abs_diff"], maximum)
+                    totals["logits_abs_diff_sum"] += total_difference
+                    totals["logits_elements"] += difference.numel()
+                    totals["changed_voxels"] += changed
+                    totals["voxels"] += count
+                    totals["logits_mean_abs_diff"] = totals["logits_abs_diff_sum"] / totals["logits_elements"]
+                    totals["changed_fraction"] = totals["changed_voxels"] / totals["voxels"]
+                    del difference
+                del logits, prediction
+        finally:
+            self.no_ppe, self.no_mixing = selected_flags
+        metadata = getattr(batch[image_key], "meta", {})
+        self._write_diagnostics({
+            "event": "case", "batch_index": batch_index,
+            "case": str(batch.get("name", "unknown")),
+            "source": str(metadata.get("filename_or_obj", "unknown")),
+            "image_shape": list(batch[image_key].shape),
+            "patch_count": len(patches),
+            "patch_positions": [list(position) for _, _, position in patches],
+            "comparisons": comparisons,
+        })
+        self.diagnostics_cases += 1
+        return selected_pred
+
+    def test_step(self, batch, batch_index):
         image = batch[image_key]  # (B,C,H,W,D)
         patches = self.split_to_patch(image)
-        results = self._collect_patch_outputs(patches)
-        pred = self._predict_from_patch_outputs(results, image.shape[2:])
+        if self.diagnostics_stream is None:
+            results = self._collect_patch_outputs(patches)
+            pred = self._predict_from_patch_outputs(results, image.shape[2:])
+        else:
+            pred = self._diagnostic_prediction(batch, patches, image.shape[2:], batch_index)
         return {
             "image": ("image", image.detach().cpu()),
             "out": ("image", pred.detach().cpu()),

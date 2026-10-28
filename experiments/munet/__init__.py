@@ -51,6 +51,13 @@ def train(args, parsed):
 
 
 class MUNetInferencer(PlainSegInferencer):
+    """Add --diagnostics ./a.txt to inference or custom val for four-way checks.
+
+    The exclusive-create UTF-8 JSON-lines report contains settings, per-case
+    comparisons against normal inference, and totals. Requires one device and
+    an existing parent directory; performs four forwards per case.
+    """
+
     def get_argument_parser(self):
         parser = super().get_argument_parser()
         parser.add_argument(
@@ -61,7 +68,55 @@ class MUNetInferencer(PlainSegInferencer):
             "--no-ppe", action="store_true",
             help="Compute PPE at (0, 0, 0) for every patch; keep local positional encoding.",
         )
+        parser.add_argument(
+            "--diagnostics", type=resolved_path, default=None, metavar="PATH",
+            help="Write four-condition inference diagnostics to a new text file (one device only).",
+        )
         return parser
+
+    def parse_args(self, args):
+        super().parse_args(args)
+        path = self.args.diagnostics
+        if path is not None:
+            if len(self.devices) != 1:
+                raise ValueError("--diagnostics requires exactly one device")
+            if path.exists():
+                raise FileExistsError(f"Diagnostics file already exists: {path}")
+            if not path.parent.is_dir():
+                raise FileNotFoundError(f"Diagnostics parent directory does not exist: {path.parent}")
+
+    def __call__(self):
+        if self.args.diagnostics is None:
+            return super().__call__()
+        # Exclusive creation also protects against a file appearing after parsing.
+        with self.args.diagnostics.open("x", encoding="utf-8") as stream:
+            self.module.diagnostics_stream = stream
+            self.module.diagnostics_totals = {}
+            self.module.diagnostics_cases = 0
+            self.module._write_diagnostics({
+                "event": "settings", "checkpoint": str(self.ckpt_path),
+                "output_directory": str(self.save_path),
+                "requested_flags": {"no_ppe": self.args.no_ppe, "no_mixing": self.args.no_mixing},
+                "effective_flags": {"no_ppe": self.module.no_ppe, "no_mixing": self.module.no_mixing},
+                "gamma": self.module.bottleneck.gamma.detach().cpu().tolist(),
+                "patch_size": list(self.plan.patch_size),
+                "overlap": list(self.module.overlap),
+                "comparison_reference": "normal",
+                "comparison_space": "stitched logits and labels before output resampling",
+                "no_ppe_behavior": "PPE coordinates become (0, 0, 0); local PE remains",
+            })
+            try:
+                result = super().__call__()
+                self.module._write_diagnostics({
+                    "event": "summary", "cases": self.module.diagnostics_cases,
+                    "comparisons": self.module.diagnostics_totals,
+                })
+                return result
+            except BaseException as exc:
+                self.module._write_diagnostics({"event": "error", "message": str(exc)})
+                raise
+            finally:
+                self.module.diagnostics_stream = None
 
     def _build_module(self):
         # Validate metadata before constructing the model or starting the trainer.
