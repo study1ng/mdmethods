@@ -40,6 +40,7 @@ class MUNetTrainingModule(UNetTrainingModule):
         plan: Plan,
         overlap_scale: float = 0.25,
         gamma: float = 1e-5,
+        bottleneck_weight_decay: float = 0.1,
     ):
         """Training Module for MUNet
 
@@ -60,6 +61,10 @@ class MUNetTrainingModule(UNetTrainingModule):
             the proposition of positional encoding which represents the position the patch in whole image, by default 0.5
         pos_blend : (Tensor, Tensor) -> Tensor, optional
             the function to mix positional encoding and feature map, by default lambda
+        bottleneck_weight_decay : float, optional
+            AdamW decay for the added bottleneck, including gamma, default 0.1.
+            Mamba A_log and D are always excluded from decay in both the UNet
+            and added bottleneck. Missing values in older checkpoints use 0.1.
         """
         self.plan = plan
         self.overlap_scale = overlap_scale  # proposion of self.plan.patch_size
@@ -68,6 +73,9 @@ class MUNetTrainingModule(UNetTrainingModule):
             global_positional_encoding_proposition
         )
         self.gamma = gamma
+        if not math.isfinite(bottleneck_weight_decay) or bottleneck_weight_decay < 0:
+            raise ValueError("bottleneck_weight_decay must be finite and nonnegative")
+        self.bottleneck_weight_decay = bottleneck_weight_decay
         super().__init__(builder, weights)
         self.unet.deep_supervision = False
         self.unet.decoder.deep_supervision = False
@@ -650,17 +658,29 @@ class MUNetTrainingModule(UNetTrainingModule):
         }
 
     def configure_optimizers(self):
+        # Parameter attributes are not interpreted by AdamW itself. Explicitly
+        # split decay groups, also recognizing names if a restore lost attributes.
+        # Preserve parameter names/state-dict keys and include frozen parameters
+        # as before; AdamW skips parameters without gradients.
+        parameter_groups = []
+        no_decay_groups = []
+        for module, decay in (
+            (self.unet, 0.1),
+            (self.bottleneck, self.bottleneck_weight_decay),
+        ):
+            decayed, no_decay = [], []
+            for name, parameter in module.named_parameters():
+                excluded = getattr(parameter, "_no_weight_decay", False) or (
+                    name.rsplit(".", 1)[-1] in {"A_log", "D"}
+                )
+                (no_decay if excluded else decayed).append(parameter)
+            if decayed:
+                parameter_groups.append({"params": decayed, "lr": 4e-4, "weight_decay": decay})
+            if no_decay:
+                no_decay_groups.append({"params": no_decay, "lr": 4e-4, "weight_decay": 0.0})
+        parameter_groups.extend(no_decay_groups)
         optim = torch.optim.AdamW(
-            [
-                {
-                    "params": self.unet.parameters(),
-                    "lr": 4e-4,
-                },
-                {
-                    "params": self.bottleneck.parameters(),
-                    "lr": 4e-4,
-                },
-            ],
+            parameter_groups,
             eps=1e-5,
             weight_decay=1e-1,
             betas=(0.9, 0.95),
