@@ -117,23 +117,7 @@ Agents must not execute Python commands in this repository. Python must be run
 manually by the user inside the project's container environment. This includes
 direct `python` invocations, `uv run python ...`, test runners, import checks,
 training, inference, analysis, pruning, and Python-based formatting or linting
-tools. When Python validation is needed, provide the exact command and explain
-its purpose, then ask the user to run it and share the result.
-
-Recommend validation proportionally to the change:
-
-1. Ask the user to run a syntax check for changed Python files, for example:
-
-   ```bash
-   uv run python -m py_compile path/to/changed_file.py
-   ```
-
-2. Suggest focused imports or small CPU-only checks when they do not initialize
-   a dataset, trainer, logger, or CUDA-only extension.
-3. For tensor or model changes, prefer a minimal synthetic-input check. Keep it
-   CPU-only unless CUDA behavior is the subject of the change.
-4. Ask the user to run a real experiment only when it is necessary and the
-   required data, hardware, runtime, and output destination are known.
+tools.
 
 Report which non-Python checks the agent performed and which Python commands
 were delegated to the user. If validation was not completed because results
