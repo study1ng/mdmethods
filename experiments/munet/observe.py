@@ -11,6 +11,7 @@ import math
 import os
 from pathlib import Path
 import re
+import shutil
 import signal
 import statistics
 import subprocess
@@ -21,8 +22,9 @@ import uuid
 from copy import copy
 from datetime import datetime, timezone
 from collections import deque
+from contextlib import contextmanager
 from concurrent.futures import ProcessPoolExecutor
-from multiprocessing import get_context
+from multiprocessing import active_children, get_context
 import platform
 from importlib.metadata import PackageNotFoundError, version
 
@@ -35,7 +37,7 @@ from experiments.config import image_key, label_key
 from experiments.munet.evaluation import paired_cases
 from experiments.munet.observe_cpu import (
     BOTTLENECK_STAGES, METRIC_GROUPS, comparison, full_feature_stats,
-    initialize_worker, process_case, write_metric_rows,
+    initialize_worker, process_case, run_disk_job, write_metric_rows,
 )
 from experiments.plan import Plan
 from experiments.utils import resolved_path
@@ -44,6 +46,125 @@ from experiments.utils import resolved_path
 SCHEMA = 2
 CONDITIONS = ("normal", "gamma_zero", "no_ppe", "no_mixing",
               "no_ppe_no_mixing", "reverse_order")
+
+
+@contextmanager
+def _ignore_sigint():
+    """A second Ctrl+C must not interrupt child reaping or release the lock early."""
+    previous = signal.signal(signal.SIGINT, signal.SIG_IGN)
+    try:
+        yield
+    finally:
+        signal.signal(signal.SIGINT, previous)
+
+
+def _stop_processes(processes, timeout=2.0):
+    """Stop/join only multiprocessing children owned by this epoch process."""
+    for process in processes:
+        if process.is_alive():
+            process.terminate()
+    deadline = time.monotonic() + timeout
+    for process in processes:
+        process.join(timeout=max(0.0, deadline - time.monotonic()))
+    for process in processes:
+        if process.is_alive():
+            process.kill()
+    deadline = time.monotonic() + timeout
+    for process in processes:
+        process.join(timeout=max(0.0, deadline - time.monotonic()))
+    remaining = [process.pid for process in processes if process.is_alive()]
+    if remaining:
+        raise RuntimeError(f"Epoch children still running; retaining IPC files: {remaining}")
+
+
+def _group_running(pgid):
+    try:
+        os.killpg(pgid, 0)
+    except ProcessLookupError:
+        return False
+    if sys.platform.startswith("linux"):
+        # Containers may not reap adopted grandchildren immediately. Zombies
+        # have closed descriptors and must not keep cleanup waiting forever.
+        try:
+            for directory in Path("/proc").iterdir():
+                if not directory.name.isdecimal():
+                    continue
+                try:
+                    fields = (directory / "stat").read_text().rsplit(")", 1)[1].split()
+                    if int(fields[2]) == pgid and fields[0] not in {"Z", "X"}:
+                        return True
+                except (FileNotFoundError, ProcessLookupError):
+                    continue
+                except (OSError, ValueError, IndexError):
+                    # If membership cannot be checked, do not assume all readers exited.
+                    return True
+            return False
+        except OSError:
+            return True
+    return True
+
+
+def _wait_epoch_group(child, pgid, timeout):
+    deadline = time.monotonic() + timeout
+    while True:
+        child.poll()  # Reap the leader too, even when its descendants remain.
+        if not _group_running(pgid):
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.1)
+
+
+def _stop_epoch(child, pgid, grace=5.0, timeout=3.0):
+    """Reap an entire dedicated epoch group, including an exited leader's workers."""
+    if os.name == "nt":
+        if child.poll() is None:
+            # Windows has no killpg; taskkill includes the running leader's tree.
+            subprocess.run(["taskkill", "/PID", str(child.pid), "/T", "/F"],
+                           capture_output=True, check=False, timeout=10)
+        child.wait(timeout=10)
+        return
+    if pgid is None or pgid <= 1 or pgid == os.getpgrp():
+        raise RuntimeError("Refusing to signal a non-isolated epoch process group")
+    if child.poll() is None:
+        try:
+            # Give the GPU process a chance to run Python finally blocks first.
+            os.kill(child.pid, signal.SIGINT)
+        except ProcessLookupError:
+            pass
+        if _wait_epoch_group(child, pgid, grace):
+            child.wait(timeout=timeout)
+            return
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        try:
+            os.killpg(pgid, sig)
+        except ProcessLookupError:
+            break
+        if _wait_epoch_group(child, pgid, timeout):
+            break
+    else:
+        raise RuntimeError(f"Epoch group {pgid} still running; retaining IPC files")
+    child.wait(timeout=timeout)
+
+
+def _cleanup_epoch_ipc(path):
+    if path is not None:
+        try:
+            shutil.rmtree(path)
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            raise RuntimeError(f"Could not clean epoch IPC directory: {path}") from exc
+
+
+class _IpcDirectory:
+    """Explicit cleanup only: GC must not remove files while workers still live."""
+
+    def __init__(self, parent):
+        self.name = tempfile.mkdtemp(prefix="munet-observe-", dir=parent)
+
+    def cleanup(self):
+        _cleanup_epoch_ipc(Path(self.name))
 
 
 def _positive(value):
@@ -102,7 +223,7 @@ def _parser(custom_class):
                         help="Inference DataLoader workers; 0 disables loader multiprocessing.")
     parser.add_argument("--temp-dir", type=resolved_path,
                         default=Path("/tmp") if os.name != "nt" else resolved_path(tempfile.gettempdir()),
-                        help="Existing local temporary directory for worker IPC; Linux default: /tmp.")
+                        help="Existing local directory for CPU job files and worker IPC; Linux default: /tmp.")
     parser.add_argument("--dice", action="store_true")
     parser.add_argument("--hd", type=custom_class._hd_percentile, default=None)
     parser.add_argument("-d", "--devices", type=int, nargs="+", default=None,
@@ -119,6 +240,7 @@ def _parser(custom_class):
                         help="Maximum submitted CPU jobs, running plus queued (default: 2).")
     parser.add_argument("--_checkpoint", type=Path, help=argparse.SUPPRESS)
     parser.add_argument("--_epoch", type=int, help=argparse.SUPPRESS)
+    parser.add_argument("--_ipc-dir", type=resolved_path, help=argparse.SUPPRESS)
     return parser
 
 
@@ -193,11 +315,12 @@ def _compatible_settings(previous, current):
     return previous == current and set(old_roots).issubset(new_roots)
 
 
-def _worker_environment(args, gpu):
+def _worker_environment(args, gpu, ipc_directory=None):
     # These must be set before launching Python, before tempfile or
     # multiprocessing can cache an inherited shared-filesystem TMPDIR.
+    temporary = str(ipc_directory if ipc_directory is not None else args.temp_dir)
     return dict(os.environ, CUDA_VISIBLE_DEVICES=gpu["uuid"], CUDA_DEVICE_ORDER="PCI_BUS_ID",
-                TMPDIR=str(args.temp_dir), TEMP=str(args.temp_dir), TMP=str(args.temp_dir),
+                TMPDIR=temporary, TEMP=temporary, TMP=temporary,
                 PYTHONUNBUFFERED="1")
 
 
@@ -427,6 +550,8 @@ class Observation:
         self.metrics = {}
         self.full_encoder_norms = {}
         self.queue_wait_seconds = 0.0
+        self.disk_write_seconds = self.disk_read_seconds = 0.0
+        self.ipc_directory = _IpcDirectory(args._ipc_dir or args.temp_dir)
         self.gamma = module.bottleneck.gamma.detach().cpu().float().reshape(-1)[0].item()
         self.pool = ProcessPoolExecutor(max_workers=args.workers,
                                         mp_context=get_context("spawn"),
@@ -487,6 +612,7 @@ class Observation:
     _comparison = staticmethod(comparison)
 
     def _accept(self, result):
+        self.disk_read_seconds += result.get("disk_read_seconds", 0.0)
         for record in result["records"]:
             if record["event"] == "feature_full_stats":
                 key = record["case"], record["condition"], tuple(record["position"])
@@ -518,7 +644,19 @@ class Observation:
 
     def _submit(self, function, *arguments):
         self._make_room()
-        self.pending.append(self.pool.submit(function, *arguments))
+        # Serialize in this process rather than letting multiprocessing's tensor
+        # reducers move storage into /dev/shm. Metadata/MetaTensor histories and
+        # full-stats tensors must take this same path, not just patch logits.
+        path = Path(self.ipc_directory.name) / f"{uuid.uuid4().hex}.pt"
+        try:
+            started = time.perf_counter()
+            torch.save(arguments, path)
+            self.disk_write_seconds += time.perf_counter() - started
+            future = self.pool.submit(run_disk_job, function, path)
+        except BaseException:
+            path.unlink(missing_ok=True)
+            raise
+        self.pending.append(future)
 
     def finish(self):
         while self.pending:
@@ -529,14 +667,25 @@ class Observation:
                     raise ValueError(f"Incomplete CPU metrics: {condition}")
             write_metric_rows(self.directory, self.cases, self.metrics, self.args.dice, self.args.hd)
         self.emit({"event": "pipeline", "queue_wait_seconds": self.queue_wait_seconds,
+                   "disk_write_seconds": self.disk_write_seconds,
+                   "disk_read_seconds": self.disk_read_seconds,
                    "cpu_workers": self.args.workers, "max_pending": self.args.max_pending})
         self.stream.flush()
 
-    def close(self):
+    def close(self, *, abort=False):
         for future in self.pending:
             future.cancel()
-        self.pool.shutdown(wait=True, cancel_futures=True)
-        self.stream.close()
+        try:
+            if abort:
+                # active_children() is public in Python 3.12 and includes this
+                # epoch's CPU pool and any still-live DataLoader processes.
+                _stop_processes(active_children())
+            self.pool.shutdown(wait=True, cancel_futures=True)
+            # Wait for readers before deleting this run's exclusively owned IPC
+            # directory, including files belonging to cancelled/failed jobs.
+            self.ipc_directory.cleanup()
+        finally:
+            self.stream.close()
 
     def __call__(self, module, batch, batch_index):
         # Bound outstanding cases before allocating another case's six outputs.
@@ -614,14 +763,12 @@ class Observation:
                            "patch_count": len(patches), "patch_positions": [list(p[2]) for p in ordered],
                            "stitch_order": "original patch order for all conditions",
                            "no_ppe": module.no_ppe, "no_mixing": module.no_mixing})
-                # Shared CPU storage avoids serializing large tensor payloads into
-                # each process pipe. Never share the original GPU tensors.
-                shared_results = []
+                cpu_results = []
                 for value, position in results:
                     if isinstance(value, MetaTensor):
                         value = value.as_tensor()
-                    shared_results.append((value.share_memory_(), position))
-                outputs.append((condition, shared_results))
+                    cpu_results.append((value, position))
+                outputs.append((condition, cpu_results))
                 del results
                 self.stream.flush()
         finally:
@@ -641,7 +788,7 @@ class Observation:
         packed_samples = torch.cat(samples) if samples else torch.empty(0)
         self._submit(process_case, {
             "case": case, "groups": self.args.observe_metrics, "outputs": outputs,
-            "features": features, "samples": packed_samples.share_memory_(),
+            "features": features, "samples": packed_samples,
             "gamma": self.gamma, "patch_count": len(patches),
             "output_size": tuple(image.shape[2:]), "spacing": list(module.plan.spacing),
             "batch": cpu_batch, "source": self.cases[case], "directory": self.directory,
@@ -655,7 +802,7 @@ class Observation:
 def _worker(args, meta, custom_class):
     """Restore via the selected experiment's Custom class, including gamma parametrizations."""
     directory = args.output
-    tempfile.tempdir = str(args.temp_dir)
+    tempfile.tempdir = str(args._ipc_dir or args.temp_dir)
     input_settings = _read_json(directory / "input.json")
     if _settings(args, meta) != input_settings:
         raise ValueError("Dataset or plan changed before worker startup")
@@ -701,6 +848,8 @@ def _worker(args, meta, custom_class):
     observation.emit({"event": "execution", "temp_dir": str(args.temp_dir),
                       "loader_workers": args.loader_workers, "cpu_workers": args.workers,
                       "max_pending": args.max_pending, "cpu_job_unit": "case (six conditions) or full feature statistics",
+                      "cpu_transport": "disk", "ipc_directory": observation.ipc_directory.name,
+                      "worker_temp_dir": tempfile.tempdir,
                       "observe_metrics": args.observe_metrics,
                       "save_predictions": args.save_predictions, "save_orthogonal": args.save_orthogonal,
                       "sampling_rule": "integer floor(i * (elements - 1) / (count - 1))"})
@@ -713,10 +862,13 @@ def _worker(args, meta, custom_class):
     observation.emit({"event": "source", "files_sha256": {str(path): _sha256(path) for path in sorted(sources)}})
     validation.module.observation_predictor = observation
     started = time.perf_counter()
+    completed = False
     try:
         # The custom class still restores the selected experiment. Only observe's
         # test output handling changes: no synchronous val saving/evaluation.
         validation.trainer.test(model=validation.module, datamodule=validation.datamodule)
+        if validation.trainer.interrupted:
+            raise KeyboardInterrupt
         observation.finish()
         if _settings(args, meta) != input_settings:
             raise ValueError("Dataset or plan changed during observation")
@@ -731,9 +883,13 @@ def _worker(args, meta, custom_class):
                                   for path in directory.rglob("*")
                                   if path.is_file() and path.name not in {"worker.log", "complete.json"}}}
         _write_json(directory / "complete.json", manifest)
+        completed = True
     finally:
-        observation.close()
-        validation.module.observation_predictor = None
+        with _ignore_sigint():
+            try:
+                observation.close(abort=not completed)
+            finally:
+                validation.module.observation_predictor = None
 
 
 def observe(command, meta, custom_class):
@@ -775,6 +931,8 @@ def observe(command, meta, custom_class):
         lock.close()
         raise RuntimeError(f"Another observer owns {args.output}") from exc
     child = None
+    child_group = None
+    epoch_ipc = None
     try:
         config = args.output / "observe.json"
         if config.exists():
@@ -845,12 +1003,17 @@ def observe(command, meta, custom_class):
                     for flag in ("no_ppe", "no_mixing"):
                         if getattr(args, flag):
                             worker_command.append("--" + flag.replace("_", "-"))
-                    environment = _worker_environment(args, gpu)
+                    # The monitor owns this root so it can clean disk payloads
+                    # after SIGKILL too. Never infer deletion paths from worker logs.
+                    epoch_ipc = Path(tempfile.mkdtemp(prefix="munet-observe-epoch-", dir=args.temp_dir))
+                    environment = _worker_environment(args, gpu, epoch_ipc)
+                    worker_command.extend(["--_ipc-dir", str(epoch_ipc)])
                     print(f"Observing epoch {epoch} on {gpu['uuid']}: {attempt}", flush=True)
                     with (attempt / "worker.log").open("x", encoding="utf-8") as log:
                         child = subprocess.Popen(worker_command, env=environment, stdout=log,
                                                  stderr=subprocess.STDOUT,
                                                  start_new_session=os.name != "nt")
+                        child_group = child.pid if os.name != "nt" else None
                         next_status = time.monotonic() + 60
                         while child.poll() is None:
                             time.sleep(0.5)
@@ -858,7 +1021,12 @@ def observe(command, meta, custom_class):
                                 print(f"Epoch {epoch} running on {gpu['uuid']}; log: {attempt / 'worker.log'}", flush=True)
                                 next_status = time.monotonic() + 60
                         code = child.returncode
+                        with _ignore_sigint():
+                            _stop_epoch(child, child_group)
                         child = None
+                        child_group = None
+                        _cleanup_epoch_ipc(epoch_ipc)
+                        epoch_ipc = None
                     if code != 0 or not (attempt / "complete.json").is_file():
                         print(f"Epoch {epoch} failed (exit={code}); see {attempt / 'worker.log'}. Retry next round.", flush=True)
                         continue
@@ -877,17 +1045,11 @@ def observe(command, meta, custom_class):
     except KeyboardInterrupt:
         print("Stopping observer; completed epochs are retained.", flush=True)
     finally:
-        if child is not None and child.poll() is None:
-            if os.name == "nt":
-                child.terminate()
-            else:
-                os.killpg(child.pid, signal.SIGTERM)
+        with _ignore_sigint():
             try:
-                child.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                if os.name == "nt":
-                    child.kill()
-                else:
-                    os.killpg(child.pid, signal.SIGKILL)
-                child.wait()
-        lock.close()
+                if child is not None:
+                    # Do not skip descendants just because their leader exited.
+                    _stop_epoch(child, child_group if child_group is not None else child.pid)
+                _cleanup_epoch_ipc(epoch_ipc)
+            finally:
+                lock.close()

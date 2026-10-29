@@ -1,6 +1,7 @@
 """CPU-only observation jobs. Never pass a model or CUDA tensor to this pool."""
 
 import os
+import signal
 import time
 
 import nibabel as nib
@@ -23,9 +24,29 @@ BOTTLENECK_STAGES = {"encoder_features", "mamba_output", "after_residual"}
 
 def initialize_worker():
     # Spawn avoids inheriting CUDA state. Each process has one CPU thread.
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+    signal.signal(signal.SIGTERM, signal.SIG_DFL)
     os.environ["CUDA_VISIBLE_DEVICES"] = ""
     torch.set_num_threads(1)
     torch.set_num_interop_threads(1)
+
+
+def run_disk_job(function, path):
+    """Only a function reference and a path travel through multiprocessing IPC.
+
+    Load ordinary CPU storage from our own temporary file; torch.load without
+    mmap does not allocate POSIX shared memory. Results contain scalars/lists,
+    never tensors, so the return path does not need tensor reducers either.
+    """
+    try:
+        started = time.perf_counter()
+        arguments = torch.load(path, map_location="cpu", weights_only=False)
+        read_seconds = time.perf_counter() - started
+        result = function(*arguments)
+        result["disk_read_seconds"] = read_seconds
+        return result
+    finally:
+        path.unlink(missing_ok=True)
 
 
 def selected(mode, condition):

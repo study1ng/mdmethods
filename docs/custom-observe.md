@@ -102,18 +102,32 @@ CPU 後処理は spawn 方式の ProcessPoolExecutor で実行します。
 その間 GPU は次の症例を推論できます。同じ症例の normal を別workerに複製する必要がなく、
 症例間で並列化します。1症例だけの場合、この後処理の並列効果は限定的です。
 `full-stats` の全特徴統計は別のジョブとして推論中にも処理します。別の入れ子poolは作りません。
-GPU/modelはworkerへ渡さず、logitsとまとめたサンプルを共有CPUストレージで渡します。
+GPU/modelはworkerへ渡しません。logits、サンプル、全特徴統計の入力、逆変換用の
+MetaTensorメタデータを `--temp-dir` 配下の専用一時ディレクトリへ保存し、workerには
+関数とファイルパスだけを渡します。workerは通常のCPUメモリに読み込み、計算結果の数値・リストだけを
+返します。テンソルをプロセス間通信に載せないため、後処理の転送には /dev/shm を使いません。
 
 上限に達した場合はGPU側が待機し、無制限にRAMを消費することを防ぎます。
 上限はバイト数ではありません。処理中の1症例には6条件分のパッチlogitsが必要で、
 投入済みジョブに加えて現在構築中の1症例・転送用一時データ・workerの合成/評価用RAMも使います。
-Linuxでは共有テンソルに /dev/shm の容量も必要です。大きな症例でメモリ不足になる場合は
+一時ディスクにも、投入済みジョブのテンソルを保存できる空き容量が必要です。
+大きな症例でメモリやディスク容量が不足する場合は
 まず `--max-pending 1` に下げてください。4 workerを十分使う場合は、RAMを確認して
 `--max-pending 4` に上げます。`-w 1` でもCPU後処理は別プロセスで動きます。
 
 TMPDIR / TEMP / TMP はGPU子プロセス起動前に設定し、CPU worker と DataLoader に引き継ぎます。
-共有ストレージの一時領域でIPCエラーが出る場合はローカルの `--temp-dir` を指定してください。
-データや一時領域は自動削除しません。
+高速なローカルSSDなど、十分な空き容量がある `--temp-dir` を指定してください。
+/tmp が tmpfs の環境もあるため、ディスクを使いたい場合はマウント先を確認してください。
+監視側がepochごとに `munet-observe-epoch-*` 一時ディレクトリを作り、
+GPU子プロセス、CPU worker、DataLoader の TMPDIR / TEMP / TMP をその配下に揃えます。
+ディスク転送用ジョブのファイルは処理終了時（例外時も含む）に削除します。
+キャンセル分やmultiprocessingの一時ファイルは、子プロセスの停止確認後に監視側も回収します。
+監視プロセス自体のSIGKILL、マシン停止、停止不能なI/O待ちなどでは一時ファイルが残る場合があります。
+ユーザーのデータ、既存の一時ファイル、失敗したepochの成果物は削除しません。
+
+DataLoaderのプロセス間転送はこの変更とは別で、`--loader-workers` が1以上なら
+共有メモリを使用する場合があります。コンテナでSIGBUSを切り分ける場合は
+`--loader-workers 0` を指定してください。`--temp-dir` を変えても /dev/shm の容量は増えません。
 
 ## 計時と完了管理
 
@@ -122,9 +136,12 @@ TMPDIR / TEMP / TMP はGPU子プロセス起動前に設定し、CPU worker と 
 - `cpu_case_runtime`：特徴サンプル解析を含めた症例単位のCPU時間。
 - `feature_full_stats.cpu_seconds`：全特徴統計のCPU時間。
 - `pipeline.queue_wait_seconds`：キュー制御・最終回収でfutureを待った合計時間。
+- `pipeline.disk_write_seconds` / `disk_read_seconds`：CPUジョブの一時ファイル書き込み／読み込み時間の合計。
 - `complete.json.seconds_including_metrics`：全症例の推論とCPUジョブ・CSV出力までの経過時間。
 
-GPUからCPUへの共有ストレージ準備など、個別時間に含まれない管理処理もあります。
+一時ファイル書き込みはGPU側で行うため、推論の進行にはその時間もかかります。
+全特徴統計の書き込みはcallback内なので `runtime` にも含まれます。
+個別時間に含まれない管理処理もあります。
 並列区間は重なるため、各時間を足してもepochの経過時間には一致しません。
 `runtime` は観測設定にも依存し、通常推論だけのベンチマークではありません。
 
@@ -140,6 +157,15 @@ last.ckpt は対象外です。同じepochの複数コピーは安定待ち後�
 
 `-i / --interval` は走査間隔で既定60秒です。サイズ・更新時刻がこの間隔以上離れた
 2回の走査で変わらないことを確認してから処理します。処理後も監視を続け、Ctrl+Cで終了します。
+
+Linux/POSIXではepoch専用のプロセスグループを保持します。Ctrl+Cでは、まずGPU子プロセスに
+SIGINTを送り、Python側の終了処理に5秒の猶予を与えます。中断処理ではCPU poolと残存DataLoaderを
+停止・joinしてから一時ファイルを削除します。実行中のCPUジョブが自然終了するまで待ち続けません。
+グループ内にプロセスが残ればSIGTERM、さらにSIGKILLへ進み、それぞれ最大3秒確認します。
+GPU子プロセスが先に終了しても残存workerの確認は省略しません。停止・回収中の再度のCtrl+Cは無視します。
+Linuxではファイル記述子を既に閉じたゾンビと実行中のプロセスを区別します。
+停止を確認できない場合はエラーを出し、一時領域を保持します。完了済みepochと失敗時の成果物は保持します。
+Windowsは実行中のGPU子プロセスに対するtaskkill /T /Fでの停止となり、既に親を失った子の回収は保証しません。
 
 GPUは直前に2回確認し、計算プロセスなし・使用率0%・使用メモリ64MiB以下から1台選びます。
 `--devices 0 1` で候補のCUDA論理番号を制限できます。UUIDで子プロセスに1台だけ公開します。
@@ -195,6 +221,8 @@ uv run python -m py_compile experiments/munet/observe.py experiments/munet/obser
 uv run python main.py munet custom observe --module-help
 uv run python main.py munet custom --experiment_name bd0_gamma_tanh observe --module-help
 uv run python -m unittest discover -s tests -p test_munet_observe.py
+uv run python -m unittest discover -s tests -p test_munet_observe_disk.py
+uv run python -m unittest discover -s tests -p test_munet_observe_shutdown.py
 uv run python -m unittest discover -s tests -p test_munet_inference.py
 ```
 
@@ -236,6 +264,11 @@ print("CPU metric smoke checks passed")
 PY
 ```
 
-複数プロセスでの受け渡し、保存なしDice/HDと通常valとの一致、逆変換後のNIfTI、
-worker失敗時の未完了扱い、実データでの速度・RAMは別途コンテナで確認が必要です。
+ディスク転送の回帰テストは、合成CPUテンソルでspawn方式の受け渡し、MetaTensorの復元、
+パスだけのジョブ投入、成功・例外・キャンセル時の一時ファイル削除を確認します。
+終了処理テストは、実行中ジョブの停止順、停止未確認時のファイル保持、終了済みGPU子プロセスの
+worker回収を対象にします。Linuxの合成プロセステストでは、ファイルを開いたままSIGTERMを無視する
+子を作り、そのテスト専用グループだけを停止してファイルが閉じられることを確認します。
+保存なしDice/HDと通常valとの一致、逆変換後のNIfTI、実データでの速度・RAMは
+別途コンテナで確認が必要です。検証は未実行です。
 実データを使う場合は少数症例の独立した入力と、未使用の出力先で確認してください。
