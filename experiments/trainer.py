@@ -161,12 +161,15 @@ class Experiment(ArgumentAdaptor):
     def parse_args(self, args):
         super().parse_args(args)
         self.data = self.args.data
-        self.save_path = self.args.save_path / self.meta.lib
-        if self.meta.experiment_name is not None:
-            self.save_path = self.save_path / self.meta.experiment_name
-        self.save_path = self.save_path / nowstring()
-        self.devices = self.args.devices
         self.ckpt = self.args.ckpt
+        if self.ckpt is not None:
+            self.save_path = self.ckpt.parent
+        else:
+            self.save_path = self.args.save_path / self.meta.lib
+            if self.meta.experiment_name is not None:
+                self.save_path = self.save_path / self.meta.experiment_name
+            self.save_path = self.save_path / nowstring()
+        self.devices = self.args.devices
         self.epochs = self.args.epochs
 
     def __call__(self):
