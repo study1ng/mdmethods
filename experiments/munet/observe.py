@@ -15,6 +15,7 @@ import signal
 import statistics
 import subprocess
 import sys
+import tempfile
 import time
 import uuid
 from copy import copy
@@ -22,6 +23,7 @@ from datetime import datetime, timezone
 
 import torch
 from lightning import Trainer
+from monai.data import MetaTensor
 
 from experiments import ArgumentAdaptor
 from experiments.callbacks import LogCallback
@@ -51,15 +53,49 @@ def _positive_int(value):
     return number
 
 
+def _nonnegative_int(value):
+    number = int(value)
+    if number < 0:
+        raise argparse.ArgumentTypeError("must be nonnegative")
+    return number
+
+
+def _training_roots(value):
+    parts = value.split(",")
+    if any(not part.strip() for part in parts):
+        raise argparse.ArgumentTypeError("trained must contain nonempty comma-separated directories")
+    return tuple(sorted({resolved_path(part.strip()) for part in parts}))
+
+
+def _sample_indices(elements, limit, *, device="cpu"):
+    """Inclusive endpoints, integer arithmetic only, O(limit) storage.
+
+    Python integers also avoid overflow in i * (elements - 1). A float32
+    linspace can round the last valid index up past the end for large tensors.
+    """
+    if elements < 0 or limit < 1:
+        raise ValueError("elements must be nonnegative and limit must be positive")
+    count = min(elements, limit)
+    values = ([index * (elements - 1) // (count - 1) for index in range(count)]
+              if count > 1 else [0] if count == 1 else [])
+    return torch.tensor(values, dtype=torch.long, device=device)
+
+
 def _parser(custom_class):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("data", type=resolved_path)
-    parser.add_argument("trained", type=resolved_path)
+    parser.add_argument("trained", type=_training_roots,
+                        help="One training directory or comma-separated continuation directories.")
     parser.add_argument("plan", type=resolved_path)
     parser.add_argument("output", type=resolved_path)
     parser.add_argument("-mh", "--module-help", action="help")
     parser.add_argument("-i", "--interval", type=_positive, default=60)
     parser.add_argument("-w", "--workers", type=_positive_int, default=4)
+    parser.add_argument("--loader-workers", type=_nonnegative_int, default=4,
+                        help="Inference DataLoader workers; 0 disables loader multiprocessing.")
+    parser.add_argument("--temp-dir", type=resolved_path,
+                        default=Path("/tmp") if os.name != "nt" else resolved_path(tempfile.gettempdir()),
+                        help="Existing local temporary directory for worker IPC; Linux default: /tmp.")
     parser.add_argument("--dice", action="store_true")
     parser.add_argument("--hd", type=custom_class._hd_percentile, default=None)
     parser.add_argument("-d", "--devices", type=int, nargs="+", default=None,
@@ -110,13 +146,31 @@ def _sha256(path):
 
 def _settings(args, meta):
     cases = paired_cases(args.data / image_key, args.data / label_key)
-    return {"schema": SCHEMA, "data": str(args.data), "trained": str(args.trained),
+    return {"schema": SCHEMA, "data": str(args.data), "trained": [str(root) for root in args.trained],
             "plan_sha256": _sha256(args.plan), "experiment": meta.experiment_name,
             "dice": args.dice, "hd": args.hd, "feature_samples": args.feature_samples,
             "no_ppe": args.no_ppe, "no_mixing": args.no_mixing,
             "conditions": list(CONDITIONS),
             "cases": {name: {key: _signature(path) for key, path in case.items()}
                       for name, case in cases.items()}}
+
+
+def _compatible_settings(previous, current):
+    """Accept legacy single-root settings and additions to the search roots."""
+    previous, current = dict(previous), dict(current)
+    old_roots = previous.pop("trained")
+    new_roots = current.pop("trained")
+    if isinstance(old_roots, str):
+        old_roots = [old_roots]
+    return previous == current and set(old_roots).issubset(new_roots)
+
+
+def _worker_environment(args, gpu):
+    # These must be set before launching Python, before tempfile or
+    # multiprocessing can cache an inherited shared-filesystem TMPDIR.
+    return dict(os.environ, CUDA_VISIBLE_DEVICES=gpu["uuid"], CUDA_DEVICE_ORDER="PCI_BUS_ID",
+                TMPDIR=str(args.temp_dir), TEMP=str(args.temp_dir), TMP=str(args.temp_dir),
+                PYTHONUNBUFFERED="1")
 
 
 def _smi(*arguments):
@@ -183,22 +237,63 @@ def _idle_gpu(candidates):
             "memory_used_mib": used, "utilization_percent": 0}
 
 
-def _checkpoints(root):
+def _checkpoints(roots):
     """Only immutable numbered periodic snapshots, never the mutable last.ckpt."""
     found = {}
-    for path in root.rglob("*"):
-        if not path.is_file() or not path.name.endswith((".ckpt", ".pth", ".pt")):
-            continue
-        match = re.search(r"(?:^|[_-])epoch[=_-]?(\d+)(?=[._-]|$)", path.name)
-        if match is None:
-            continue
-        epoch = int(match[1]) + 1
-        if epoch % 10:
-            continue
-        if epoch in found:
-            raise ValueError(f"Duplicate epoch {epoch}: {found[epoch]}, {path}. Select one training run.")
-        found[epoch] = path
-    return sorted(found.items())
+    for root in roots:
+        for path in root.rglob("*"):
+            if not path.is_file() or not path.name.endswith((".ckpt", ".pth", ".pt")):
+                continue
+            match = re.search(r"(?:^|[_-])epoch[=_-]?(\d+)(?=[._-]|$)", path.name)
+            if match is None:
+                continue
+            epoch = int(match[1]) + 1
+            if epoch % 10:
+                continue
+            found.setdefault(epoch, set()).add(path.resolve())
+    return [(epoch, tuple(sorted(paths))) for epoch, paths in sorted(found.items())]
+
+
+def _stable_candidates(paths, seen, interval):
+    ready = True
+    now = time.monotonic()
+    for path in paths:
+        signature = _signature(path)
+        previous = seen.get(str(path))
+        if previous is None or previous[0] != signature:
+            seen[str(path)] = signature, now
+            ready = False
+        elif now - previous[1] < interval:
+            ready = False
+    return ready
+
+
+def _cached_digest(path, digests):
+    signature = _signature(path)
+    key = str(path), signature["size"], signature["mtime_ns"]
+    if key not in digests:
+        digest = _sha256(path)
+        if _signature(path) != signature:
+            raise OSError(f"Checkpoint changed while hashing: {path}")
+        digests[key] = digest
+    return digests[key]
+
+
+def _select_checkpoint(epoch, paths, digests, completed=None):
+    """Called only after every candidate is stable; identical copies count once."""
+    if len(paths) > 1:
+        hashes = {_cached_digest(path, digests) for path in paths}
+        if len(hashes) != 1:
+            raise ValueError(f"Conflicting checkpoints for epoch {epoch}: {paths}")
+    if completed is not None:
+        for path in paths:
+            if _signature(path) == completed["checkpoint"]:
+                return path
+        path = paths[0]
+        if _cached_digest(path, digests) != completed.get("checkpoint_sha256"):
+            raise ValueError(f"Completed checkpoint was replaced at epoch {epoch}: {path}")
+        return path
+    return paths[0]
 
 
 def _completed(directory):
@@ -316,9 +411,10 @@ class Observation:
         self.stream.flush()
 
     def _sample(self, value):
+        if isinstance(value, MetaTensor):
+            value = value.as_tensor()
         flat = value.reshape(-1)
-        count = min(flat.numel(), self.args.feature_samples)
-        indices = torch.linspace(0, flat.numel() - 1, count, device=flat.device).long()
+        indices = _sample_indices(flat.numel(), self.args.feature_samples, device=flat.device)
         return flat[indices].detach().to(device="cpu", dtype=torch.float32).clone()
 
     @staticmethod
@@ -494,6 +590,7 @@ class Observation:
 def _worker(args, meta, custom_class):
     """Restore via the selected experiment's Custom class, including gamma parametrizations."""
     directory = args.output
+    tempfile.tempdir = str(args.temp_dir)
     input_settings = _read_json(directory / "input.json")
     if _settings(args, meta) != input_settings:
         raise ValueError("Dataset or plan changed before worker startup")
@@ -533,7 +630,11 @@ def _worker(args, meta, custom_class):
     if args.no_mixing:
         command.append("--no-mixing")
     validation = EpochValidation(command, copy(meta))
+    validation.datamodule.num_workers = args.loader_workers
     observation = Observation(directory, args, validation.module)
+    observation.emit({"event": "execution", "temp_dir": str(args.temp_dir),
+                      "loader_workers": args.loader_workers, "metric_workers": args.workers,
+                      "sampling_rule": "integer floor(i * (elements - 1) / (count - 1))"})
     sources = {Path(__file__).resolve(), Path(inspect.getfile(type(validation.module))).resolve(),
                Path(__file__).with_name("model.py").resolve(), Path(__file__).with_name("__init__.py").resolve(),
                Path(inspect.getfile(type(validation.module.bottleneck))).resolve(),
@@ -568,11 +669,14 @@ def _worker(args, meta, custom_class):
 
 def observe(command, meta, custom_class):
     args = _parser(custom_class).parse_args(command)
+    if not args.temp_dir.is_dir() or not os.access(args.temp_dir, os.W_OK | os.X_OK):
+        raise ValueError(f"--temp-dir must be an existing writable/searchable local directory: {args.temp_dir}")
     if args._checkpoint is not None:
         return _worker(args, meta, custom_class)
-    if not args.trained.is_dir():
-        raise FileNotFoundError(args.trained)
-    if args.data.is_relative_to(args.output) or args.trained.is_relative_to(args.output):
+    for root in args.trained:
+        if not root.is_dir():
+            raise FileNotFoundError(root)
+    if args.data.is_relative_to(args.output) or any(root.is_relative_to(args.output) for root in args.trained):
         raise ValueError("Output must not contain the input dataset or training directory")
     settings = _settings(args, meta)
     args.output.mkdir(parents=True, exist_ok=True)
@@ -597,24 +701,33 @@ def observe(command, meta, custom_class):
     try:
         config = args.output / "observe.json"
         if config.exists():
-            if _read_json(config) != settings:
-                raise ValueError("Output settings/dataset differ; choose another output directory")
+            previous = _read_json(config)
+            if not _compatible_settings(previous, settings):
+                raise ValueError("Output settings/dataset differ or search roots were removed; choose another output directory")
+            if previous != settings:
+                _write_json(config, settings)
         else:
             if any(args.output.glob("epoch-*")):
                 raise ValueError("Existing epochs have no observe.json; choose another output directory")
             _write_json(config, settings)
         _aggregate(args.output)
         seen = {}
+        digests = {}
         while True:
             try:
                 if _settings(args, meta) != settings:
                     raise ValueError("Dataset or plan changed; choose a new output directory")
                 checkpoints = _checkpoints(args.trained)
-                for epoch, checkpoint in checkpoints:
-                    signature = _signature(checkpoint)
+                for epoch, paths in checkpoints:
+                    # Also wait for duplicate copies before comparing hashes;
+                    # a partially copied checkpoint must not cause a conflict.
+                    if not _stable_candidates(paths, seen, args.interval):
+                        continue
                     destination = args.output / f"epoch-{epoch}"
+                    completed = _completed(destination) if destination.exists() else None
+                    checkpoint = _select_checkpoint(epoch, paths, digests, completed)
+                    signature = _signature(checkpoint)
                     if destination.exists():
-                        completed = _completed(destination)
                         if completed is None:
                             # Keep interrupted artifacts for inspection; retry
                             # into a new exclusively owned attempt directory.
@@ -623,16 +736,7 @@ def observe(command, meta, custom_class):
                             destination.rename(archive)
                             print(f"Preserved incomplete epoch in {archive}", flush=True)
                         else:
-                            if completed["checkpoint"] != signature:
-                                raise ValueError(f"Completed checkpoint was replaced: {checkpoint}")
                             continue
-                    # Must be unchanged across two scans, separated by interval.
-                    previous = seen.get(str(checkpoint))
-                    if previous is None or previous[0] != signature:
-                        seen[str(checkpoint)] = (signature, time.monotonic())
-                        continue
-                    if time.monotonic() - previous[1] < args.interval:
-                        continue
                     gpu = _idle_gpu(args.devices)
                     if gpu is None:
                         print("No idle GPU; waiting.", flush=True)
@@ -649,9 +753,10 @@ def observe(command, meta, custom_class):
                                       "munet", "custom"]
                     if meta.experiment_name is not None:
                         worker_command.extend(["--experiment_name", meta.experiment_name])
-                    worker_command.extend(["observe", str(args.data), str(args.trained), str(args.plan),
+                    worker_command.extend(["observe", str(args.data), ",".join(str(root) for root in args.trained), str(args.plan),
                                            str(attempt), "--_checkpoint", str(checkpoint), "--_epoch", str(epoch),
-                                           "-w", str(args.workers), "--feature-samples", str(args.feature_samples)])
+                                           "-w", str(args.workers), "--feature-samples", str(args.feature_samples),
+                                           "--loader-workers", str(args.loader_workers), "--temp-dir", str(args.temp_dir)])
                     if args.dice:
                         worker_command.append("--dice")
                     if args.hd is not None:
@@ -659,7 +764,7 @@ def observe(command, meta, custom_class):
                     for flag in ("no_ppe", "no_mixing"):
                         if getattr(args, flag):
                             worker_command.append("--" + flag.replace("_", "-"))
-                    environment = dict(os.environ, CUDA_VISIBLE_DEVICES=gpu["uuid"], CUDA_DEVICE_ORDER="PCI_BUS_ID")
+                    environment = _worker_environment(args, gpu)
                     print(f"Observing epoch {epoch} on {gpu['uuid']}: {attempt}", flush=True)
                     with (attempt / "worker.log").open("x", encoding="utf-8") as log:
                         child = subprocess.Popen(worker_command, env=environment, stdout=log,
@@ -684,7 +789,7 @@ def observe(command, meta, custom_class):
                     _aggregate(args.output)
                     print(f"Completed epoch {epoch}: {destination}", flush=True)
                     gc.collect()
-            except (subprocess.SubprocessError, FileNotFoundError) as exc:
+            except (subprocess.SubprocessError, OSError) as exc:
                 print(f"Observation deferred: {exc}", flush=True)
             print(f"Next scan in {args.interval:g}s; Ctrl+C to stop.", flush=True)
             time.sleep(args.interval)
