@@ -172,13 +172,15 @@ def _save_orthogonal(value, affine, path, *, is_label):
     nib.save(image, path)
 
 
-def _case_labels(case, prediction_path, num_classes, hd, *, orthogonal_dir=None):
+def _case_labels(case, prediction_path, num_classes, hd, *, orthogonal_dir=None,
+                 prediction_name=None, save_shared=True):
     input_image = nib.load(case["input_image"])
     if len(input_image.shape) != 3:
         raise ValueError("Expected a 3D input image")
     input_affine = _affine_mm(input_image)
     target_shape, target_affine, spacing = _evaluation_grid(input_image.shape, input_affine)
-    prediction_image = nib.load(prediction_path)
+    prediction_image = (nib.load(prediction_path)
+                        if isinstance(prediction_path, (str, Path)) else prediction_path)
     reference_image = nib.load(case["reference_label"])
     # Only shape and affine are needed from the target, not its intensity data.
     target = MetaTensor(
@@ -195,19 +197,19 @@ def _case_labels(case, prediction_path, num_classes, hd, *, orthogonal_dir=None)
     prediction = aligned_labels(prediction_image)
     reference = aligned_labels(reference_image)
     if orthogonal_dir is not None:
-        input_values = input_image.get_fdata(dtype=np.float32)
-        if not np.isfinite(input_values).all():
-            raise ValueError("Input image contains nonfinite intensities")
-        input_tensor = MetaTensor(torch.from_numpy(input_values)[None], affine=input_affine)
-        aligned_input = ResampleToMatch(mode="bilinear", padding_mode="zeros")(
-            input_tensor, target
-        )
-        prefix = prediction_path.name.removesuffix("_out.nii.gz")
-        for suffix, value, is_label in (
-            ("image", aligned_input.as_tensor()[0], False),
-            ("gt", reference[0, 0], True),
-            ("out", prediction[0, 0], True),
-        ):
+        prefix = (prediction_name or Path(prediction_path).name).removesuffix("_out.nii.gz")
+        values = [("out", prediction[0, 0], True)]
+        if save_shared:
+            input_values = input_image.get_fdata(dtype=np.float32)
+            if not np.isfinite(input_values).all():
+                raise ValueError("Input image contains nonfinite intensities")
+            input_tensor = MetaTensor(torch.from_numpy(input_values)[None], affine=input_affine)
+            aligned_input = ResampleToMatch(mode="bilinear", padding_mode="zeros")(
+                input_tensor, target
+            )
+            values.extend((("image", aligned_input.as_tensor()[0], False),
+                           ("gt", reference[0, 0], True)))
+        for suffix, value, is_label in values:
             _save_orthogonal(
                 value, target_affine, orthogonal_dir / f"{prefix}_{suffix}.nii.gz",
                 is_label=is_label,
@@ -230,9 +232,11 @@ def _collect_organs(name, case, prediction_path):
     }
 
 
-def _evaluate_case(name, case, prediction_path, num_classes, organs, dice, hd, orthogonal_dir):
+def _evaluate_case(name, case, prediction_path, num_classes, organs, dice, hd, orthogonal_dir,
+                   prediction_name=None, save_shared=True):
     prediction, reference, spacing = _case_labels(
-        case, prediction_path, num_classes, hd, orthogonal_dir=orthogonal_dir
+        case, prediction_path, num_classes, hd, orthogonal_dir=orthogonal_dir,
+        prediction_name=prediction_name, save_shared=save_shared,
     )
     dice_metric = DiceMetric(
         include_background=True, reduction="none", ignore_empty=True,
@@ -291,7 +295,8 @@ def _run_cases(function, jobs, workers, description):
     return results
 
 
-def write_metrics(cases, save_path: Path, *, epoch=None, num_classes=None, dice, hd, workers=4):
+def write_metrics(cases, save_path: Path, *, epoch=None, num_classes=None, dice, hd, workers=4,
+                  save_orthogonal=True):
     if not isinstance(workers, int) or workers < 1:
         raise ValueError("workers must be a positive integer")
     if not cases:
@@ -300,7 +305,7 @@ def write_metrics(cases, save_path: Path, *, epoch=None, num_classes=None, dice,
         raise ValueError("Evaluation requires at least one foreground class")
     metrics_dir = save_path / "metrics"
     orthogonal_dir = save_path / "orthogonal"
-    for directory in (metrics_dir, orthogonal_dir):
+    for directory in ([metrics_dir, orthogonal_dir] if save_orthogonal else [metrics_dir]):
         if directory.exists():
             raise FileExistsError(f"Output directory already exists: {directory}")
     predictions = _prediction_paths(cases, save_path, epoch)
@@ -317,7 +322,10 @@ def write_metrics(cases, save_path: Path, *, epoch=None, num_classes=None, dice,
             raise ValueError("Evaluation requires at least one foreground label in prediction or reference")
     organs = sorted(organs)
     columns = (["dice"] if dice else []) + ([f"hd{hd:g}_mm"] if hd is not None else [])
-    orthogonal_dir.mkdir(parents=True, exist_ok=False)
+    if save_orthogonal:
+        orthogonal_dir.mkdir(parents=True, exist_ok=False)
+    else:
+        orthogonal_dir = None
     evaluated = _run_cases(
         _evaluate_case,
         [
@@ -328,7 +336,11 @@ def write_metrics(cases, save_path: Path, *, epoch=None, num_classes=None, dice,
     )
     # Completion order varies across workers; keep CSV ordering deterministic.
     rows = [row for name in cases for row in evaluated[name]]
+    write_metric_rows(rows, metrics_dir, columns)
 
+
+def write_metric_rows(rows, metrics_dir, columns):
+    """Write the common val/observe CSV layout from completed per-organ rows."""
     def averaged(group):
         groups = {}
         for row in rows:
