@@ -9,6 +9,8 @@ services:
         USER_NAME: ${USER_NAME}
     image: mdmethods
     tty: true
+    ports:
+      - "8000:8000"
     volumes:
       - ${HOME}:/homes/${USER_NAME}
       - /${DATA_DIR}:/${DATA_DIR}
