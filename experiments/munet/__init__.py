@@ -275,8 +275,11 @@ class MUNetMetric(ArgumentAdaptor):
 
 
 def custom(args, meta):
+    if args and args[0] == "observe":
+        from experiments.munet.observe import observe
+        return observe(args[1:], meta, MUNetCustom)
     parser = argparse.ArgumentParser()
-    parser.add_argument("action", choices=["val", "metric"])
+    parser.add_argument("action", choices=["val", "metric", "observe"])
     parser.add_argument("-mh", "--module-help", action="help")
     # Leave subcommand help and arguments to the corresponding adaptor.
     if args and args[0] in {"val", "metric"}:

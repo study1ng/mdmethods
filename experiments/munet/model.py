@@ -645,6 +645,9 @@ class MUNetTrainingModule(UNetTrainingModule):
         return selected_pred
 
     def test_step(self, batch, batch_index):
+        observer = getattr(self, "observation_predictor", None)
+        if observer is not None:
+            return observer(self, batch, batch_index)
         image = batch[image_key]  # (B,C,H,W,D)
         patches = self.split_to_patch(image)
         if self.diagnostics_stream is None:

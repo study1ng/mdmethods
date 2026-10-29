@@ -180,6 +180,10 @@ class MUNetBottleneck(L.LightningModule):
         no_mixing: bool = False,
         no_ppe: bool = False,
     ) -> tuple[PatchFeature, ...]:
+        # Runtime ablation: preserve the encoder residual exactly, including
+        # parametrized gamma variants, without changing checkpoint parameters.
+        if getattr(self, "observation_bypass", False):
+            return lasts
         observe = self.diagnostics_callback
         if observe is not None:
             observe("bottleneck_call", None, None, {
