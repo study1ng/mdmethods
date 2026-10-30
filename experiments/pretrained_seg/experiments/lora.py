@@ -1,5 +1,5 @@
 from experiments.nets.builder import Builder
-from experiments.pretrained_seg import PlainSegmentation, analyze, prune, inference
+from experiments.pretrained_seg import PlainSegmentation, analyze, prune, inference, custom
 from experiments.pretrained_seg.model import SegmentationModule as Model
 from experiments.config import default_training_config
 from lightning import Trainer

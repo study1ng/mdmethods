@@ -1,2 +1,1 @@
-uv run python main.py munet inference <画像ディレクトリ> <出力ルート> <学習時のplan.json> \
-  --ckpt <MUNetのチェックポイント.ckpt> --devices 0
+python main.py munet --experiment_name bd0 custom observe data/raw/ttsg/test/ data/trained/ttsg/munet/bd0/2026.10.08.01.31.07/ plans/ttsgPlans.json data/observe/ttsg/ -w 4 --dice --hd 95 -d 4 5 6 7  --observe-metrics basic quality confidence --max-pending 4

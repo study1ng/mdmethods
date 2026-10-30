@@ -3,7 +3,8 @@ from experiments.pretrained_seg import (
     PlainSegmentation,
     analyze,
     prune,
-    inference
+    inference,
+    custom,
 )
 from experiments.nets.ubimamba import UBiMamba as UNet
 from experiments.pretrained_seg.model import SegmentationModule as Model

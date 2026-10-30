@@ -91,3 +91,14 @@ class PlainSegInferencer(PlannedInferencer):
 
 def inference(args, meta):
     PlainSegInferencer(args, meta)()
+
+
+def custom(args, meta):
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("action", choices=["observe"])
+    parsed, remaining = parser.parse_known_args(args)
+    if parsed.action == "observe":
+        from experiments.pretrained_seg.observe import observe
+        return observe(remaining, meta)
