@@ -2,7 +2,8 @@ from experiments.pretrained_seg import (
     PlainSegmentation,
     analyze,
     prune,
-    inference
+    inference,
+    custom,
 )
 from lightning.pytorch.callbacks import BaseFinetuning
 

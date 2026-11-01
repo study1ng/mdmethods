@@ -123,6 +123,7 @@ uv run python main.py munet train \
 | [custom val](docs/custom-val.md) | 推論と定量評価 |
 | [custom metric](docs/custom-metric.md) | 保存済み予測の評価 |
 | [custom observe](docs/custom-observe.md) | チェックポイントの継続観測 |
+| [pretrained_seg custom observe](docs/pretrained-seg-observe.md) | pretrained_seg のチェックポイントの継続観測 |
 
 ドキュメントは処理ごとに分け、各ファイル内にモジュール固有の使い方を記載しています。
 コマンド例はコンテナ内のプロジェクトルートで実行してください。

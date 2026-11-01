@@ -222,8 +222,8 @@ def _parser(custom_class):
     parser.add_argument("--loader-workers", type=_nonnegative_int, default=4,
                         help="Inference DataLoader workers; 0 disables loader multiprocessing.")
     parser.add_argument("--temp-dir", type=resolved_path,
-                        default=Path("/tmp") if os.name != "nt" else resolved_path(tempfile.gettempdir()),
-                        help="Existing local directory for CPU job files and worker IPC; Linux default: /tmp.")
+                        default=resolved_path("hidden-tmp"),
+                        help="Directory for CPU job files and worker IPC; created if missing (default: ./hidden-tmp).")
     parser.add_argument("--dice", action="store_true")
     parser.add_argument("--hd", type=custom_class._hd_percentile, default=None)
     parser.add_argument("-d", "--devices", type=int, nargs="+", default=None,
@@ -902,6 +902,7 @@ def observe(command, meta, custom_class):
     if args.dice or args.hd is not None:
         groups.add("quality")
     args.observe_metrics = [name for name in METRIC_GROUPS if name in groups]
+    args.temp_dir.mkdir(parents=True, exist_ok=True)
     if not args.temp_dir.is_dir() or not os.access(args.temp_dir, os.W_OK | os.X_OK):
         raise ValueError(f"--temp-dir must be an existing writable/searchable local directory: {args.temp_dir}")
     if args._checkpoint is not None:

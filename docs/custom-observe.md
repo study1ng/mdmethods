@@ -96,7 +96,7 @@ CPU 後処理は spawn 方式の ProcessPoolExecutor で実行します。
 - `-w / --workers`：CPU 後処理の最大プロセス数。既定4。各 worker の PyTorch スレッド数は1。
 - `--max-pending`：実行中と待機中を合計した CPU ジョブ数の上限。既定2。
 - `--loader-workers`：入力 DataLoader 専用。既定4、0で読み込みの多重処理を無効化。
-- `--temp-dir`：既存のローカル一時ディレクトリ。Linux は /tmp、Windows はシステム既定。
+- `--temp-dir`：ローカル一時ディレクトリ。既定は実行時のカレントディレクトリにある `./hidden-tmp`。指定先がなければ自動作成します。別の保存先を明示することもできます。
 
 出力後処理は「1症例の6条件」を1ジョブとして、合成・比較・保存・Dice/HDまでまとめます。
 その間 GPU は次の症例を推論できます。同じ症例の normal を別workerに複製する必要がなく、
