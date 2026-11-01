@@ -2,6 +2,64 @@
 
 [READMEに戻る](../README.md)
 
+## Encoder のパッチ特徴量出力
+
+`mim` の `maskratio0_6_features` と `pretrained_seg` の `features` は、
+元の実験の学習設定を引き継ぎ、`inference` で1症例の指定パッチから特徴量を保存します。
+コンテナに `zarr>=3` が必要です。依存定義への追加・環境更新はユーザーが手動で行ってください。
+
+```bash
+uv run python main.py mim inference \
+  --experiment_name maskratio0_6_features \
+  <症例.nii.gz> <MIM出力先> <plan.json> --ckpt <mim.ckpt> \
+  --patch-start 32 64 16 --patch-end 160 192 144 \
+  --device cuda:0 --save-dtype bfloat16
+
+uv run python main.py pretrained_seg inference \
+  --experiment_name features \
+  <症例.nii.gz> <seg出力先> <plan.json> --ckpt <seg.ckpt> \
+  --patch-start 32 64 16 --patch-end 160 192 144 \
+  --device cuda:0 --save-dtype float32
+```
+
+座標は `load_transformd` と `planned_transformd` 適用後（foreground crop、
+spacing 変更、正規化、padding 後）の画像の `(H,W,D)` 順です。
+開始を含み終了を含まないため、上記は `128×128×128` です。
+範囲外の座標はエラーになります。ランダム変換や MIM のマスクは適用しません。
+推論は float32、保存形式は `float32`（既定）、`float16`、`bfloat16` から選択できます。
+
+出力は `<出力先>/<画像ファイル名から .nii.gz 等を除いたID>-features.zarr/` の
+`patch_32_64_16__160_192_144/` 内に、`stem`, `stage_0`, … を保存します。
+各配列は `(C,H,W,D)`、最終 stage は bottleneck です。
+Zarr format 2 のストアに各層を順次保存し、チャンクはチャネル最大8、空間各軸最大32です。
+同じ症例でも異なる座標は追記できます。同一座標は保存 dtype が違っても上書きしません。
+画像・チェックポイントのパス／サイズ／更新日時、plan のハッシュが異なる場合も拒否するため、
+モデルや plan の比較には別の出力先を使ってください。同時書き込みは避けてください。
+
+パッチ属性に座標、前処理後の画像サイズと affine、保存 dtype を記録します。
+`complete=true` が正常終了の目印です。途中で失敗したパッチは `complete=false` のまま残り、
+再実行でも上書きしません。別の出力先を選ぶか、該当する未完了パッチを手動で削除してください。
+
+`bfloat16` はビット列を `uint16` として保存し、配列属性に
+`logical_dtype="bfloat16"` を記録します。数値として uint16 に変換したものではありません。
+読み込み時は以下のように復元します。
+
+```python
+import torch
+import zarr
+
+root = zarr.open_group("<case-id>-features.zarr", mode="r")
+array = root["patch_32_64_16__160_192_144/stem"]
+feature = torch.from_numpy(array[:]).view(torch.bfloat16)
+```
+
+CLI の確認は、コンテナ内で手動実行してください（特徴量は書き込みません）。
+
+```bash
+uv run python main.py mim inference --experiment_name maskratio0_6_features --module-help
+uv run python main.py pretrained_seg inference --experiment_name features --module-help
+```
+
 ## pretrained_seg
 
 ```bash
