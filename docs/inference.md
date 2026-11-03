@@ -8,6 +8,45 @@
 元の実験の学習設定を引き継ぎ、`inference` で1症例の指定パッチから特徴量を保存します。
 コンテナに `zarr>=3` が必要です。依存定義への追加・環境更新はユーザーが手動で行ってください。
 
+複数パッチは、UTF-8・ヘッダーあり・カンマ区切りの CSV で指定できます。
+
+```csv
+case_id,case_path,patch_id,start_h,start_w,start_d,end_h,end_w,end_d
+case1,/auto-inputs/images/case1.nii.gz,dataset_unique_patch_id,0,0,0,128,128,128
+```
+
+```bash
+uv run python main.py mim inference --experiment_name maskratio0_6_features \
+  <patches.csv> <MIM出力先> <plan.json> --ckpt <mim.ckpt> \
+  --device cuda:0 --save-dtype float32
+
+uv run python main.py pretrained_seg inference --experiment_name features \
+  <patches.csv> <seg出力先> <plan.json> --ckpt <seg.ckpt> \
+  --device cuda:0 --save-dtype bfloat16
+```
+
+モデルは一度だけロードし、`case_id` 順に処理します。同一症例は一度だけ読み込み・前処理し、
+各パッチを順次推論します。`case_path` の相対パスは実行時の作業ディレクトリ基準です。
+同じ `case_id` は同じ画像パスを指す必要があります。`case_id` は保存先のファイル名に使うため、
+空文字、`.`、`..`、パス区切りやファイル名に使えない文字は指定できません。
+`patch_id` は呼び出し元が指定する識別文字列で、保存先や推論には使いません。
+CSV 内の同一症例・同一座標の重複はエラーになります。
+
+各パッチの全 stage の保存が完了するたびに、stdout に以下の形式の JSON を1行で出力し、
+即座に flush します。診断メッセージは stderr に出力します。
+
+```json
+{"complete":true,"case_id":"case1","patch_id":"dataset_unique_patch_id","patch_start_hwd":[0,0,0],"patch_end_hwd":[128,128,128],"preprocessed_shape":[256,256,256],"preprocessed_affine":[[1,0,0,0],[0,1,0,0],[0,0,1,0],[0,0,0,1]],"type":"float32","elapsed_time":1.25}
+```
+
+`preprocessed_shape` は画像全体の空間 shape `(H,W,D)`、affine は同じ座標系のものです。
+`elapsed_time` は切り出し・デバイス転送・推論・全 stage と完了属性の保存にかかった秒数です。
+モデルロードと症例の読み込み・前処理時間は含みません。失敗したパッチには完了 JSON を出さず、
+処理を中断します。すでに保存したパッチは残ります。
+CSV 入力の保存先は `<出力先>/<case_id>-features.zarr/patch_<開始H_W_D>__<終了H_W_D>/` です。
+
+従来の単一画像・単一パッチ指定も利用できます。
+
 ```bash
 uv run python main.py mim inference \
   --experiment_name maskratio0_6_features \
