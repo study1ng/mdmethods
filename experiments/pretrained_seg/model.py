@@ -10,7 +10,7 @@ import torch.nn.functional as F
 from torch import Tensor, nn
 from monai.inferers import sliding_window_inference
 from monai.losses import DiceCELoss
-from monai.metrics import DiceMetric
+from experiments.segmentation_validation import SegmentationValidation
 
 
 class DeepDiceCELoss(nn.Module):
@@ -78,11 +78,7 @@ class SegmentationModule(UNetTrainingModule):
         super().save_hyperparameters()
         super().__init__(builder, weights=weights)
         self.loss = loss
-        self.metric = DiceMetric(
-            include_background=False,
-            reduction="mean",
-            num_classes=self.unet.output_channel,
-        )
+        self.metric = SegmentationValidation()
         self.plan = plan
 
     def forward(self, x):
@@ -146,20 +142,25 @@ class SegmentationModule(UNetTrainingModule):
             padding_mode="replicate",
         )
         pred = out.argmax(1, keepdim=True)
-        self.metric(pred, label)
+        head = self.unet.decoder.head
+        head = head[0] if isinstance(head, nn.ModuleList) else head
+        self.metric.update(pred, batch, head.output_channel)
         return {
             "image": ("image", image.detach().cpu()),
             "gt": ("image", label.detach().cpu()),
             "out": ("image", pred.detach().cpu()),
         }
 
+    def on_validation_epoch_start(self):
+        self.metric.reset()
+
     def on_validation_epoch_end(self):
         dice = self.metric.aggregate()
         self.log(
             "val_dice",
-            dice,
+            torch.tensor(dice, device=self.device),
             prog_bar=True,
-            sync_dist=True,
+            sync_dist=False,  # aggregate() already gathers and deduplicates cases.
         )
         self.metric.reset()
 

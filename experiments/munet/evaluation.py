@@ -339,25 +339,28 @@ def write_metrics(cases, save_path: Path, *, epoch=None, num_classes=None, dice,
     write_metric_rows(rows, metrics_dir, columns)
 
 
+def mean_metric_rows(rows, group, columns):
+    """Average non-NaN values identically for training val and CSV reports."""
+    groups = {}
+    for row in rows:
+        groups.setdefault(row[group], []).append(row)
+    return [
+        {group: key, **{
+            column: _mean([row[column] for row in members])
+            for column in columns
+        }}
+        for key, members in groups.items()
+    ]
+
+
 def write_metric_rows(rows, metrics_dir, columns):
     """Write the common val/observe CSV layout from completed per-organ rows."""
-    def averaged(group):
-        groups = {}
-        for row in rows:
-            groups.setdefault(row[group], []).append(row)
-        return [
-            {group: key, **{
-                column: _mean([row[column] for row in members])
-                for column in columns
-            }}
-            for key, members in groups.items()
-        ]
 
     metrics_dir.mkdir(parents=True, exist_ok=False)
     for filename, fields, values in (
         ("full.csv", ["case", "organ", *columns], rows),
-        ("case.csv", ["case", *columns], averaged("case")),
-        ("organ.csv", ["organ", *columns], averaged("organ")),
+        ("case.csv", ["case", *columns], mean_metric_rows(rows, "case", columns)),
+        ("organ.csv", ["organ", *columns], mean_metric_rows(rows, "organ", columns)),
     ):
         with (metrics_dir / filename).open("x", newline="", encoding="utf-8") as stream:
             writer = csv.DictWriter(stream, fieldnames=fields)

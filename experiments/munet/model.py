@@ -17,7 +17,7 @@ from experiments.munet.munet_bottleneck import (
     PatchFeature,
     PatchPosition,
 )
-from monai.metrics import DiceMetric
+from experiments.segmentation_validation import SegmentationValidation
 from experiments.munet.stitch_utils import split_to_patch, stitch_logits, BlendMode
 
 
@@ -82,11 +82,7 @@ class MUNetTrainingModule(UNetTrainingModule):
         self.deep_supervision = False
         self.save_hyperparameters()
         self.loss = loss
-        self.metric = DiceMetric(
-            include_background=False,
-            reduction="mean",
-            num_classes=self.unet.output_channel,
-        )
+        self.metric = SegmentationValidation()
         self.bottleneck = MUNetBottleneck(
             self.unet.skip_channels[-1],
             global_positional_encoding_proposition=self.global_positional_encoding_proposition,
@@ -317,20 +313,25 @@ class MUNetTrainingModule(UNetTrainingModule):
         patches = self.split_to_patch(image, label)
         results = self._collect_patch_outputs(patches)
         pred = self._predict_from_patch_outputs(results, image.shape[2:])
-        self.metric(pred.to(label.device), label)
+        head = self.unet.decoder.head
+        head = head[0] if isinstance(head, torch.nn.ModuleList) else head
+        self.metric.update(pred, batch, head.output_channel)
         return {
             "image": ("image", image.detach().cpu()),
             "gt": ("image", label.detach().cpu()),
             "out": ("image", pred.detach().cpu()),
         }
 
+    def on_validation_epoch_start(self):
+        self.metric.reset()
+
     def on_validation_epoch_end(self):
         dice = self.metric.aggregate()
         self.log(
             "val_dice",
-            dice,
+            torch.tensor(dice, device=self.device),
             prog_bar=True,
-            sync_dist=True,
+            sync_dist=False,  # aggregate() already gathers and deduplicates cases.
         )
         self.metric.reset()
 
